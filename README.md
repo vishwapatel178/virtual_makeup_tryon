@@ -1,1 +1,1 @@
-# virtual_makeup_tryon
+# virtual-makeup-tryon
