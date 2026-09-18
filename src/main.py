@@ -1,50 +1,42 @@
 import cv2
-import numpy as np
+from detection import detect_face
+from landmarks import get_region_points, LIP_INDICES, LEFT_CHEEK_INDICES, RIGHT_CHEEK_INDICES
+from masking import create_lip_mask, apply_lip_color
 
-# Load dummy or sample image
-img = np.zeros((300, 300, 3), dtype=np.uint8)
+image_path = input("Enter the path to your test image: ")
+image = cv2.imread(image_path)
 
-cv2.putText(img, "CG & IP Pipeline OK",
-            (20,40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0,255,0),
-            2)
+landmarks = detect_face(image_path)
 
-cv2.putText(img, "Project: Virtual Makeup Try-On",
-            (20,80),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (255,255,255),
-            1)
+if not landmarks:
+    print("No face found.")
+else:
+    print(f"Face detected! Found {len(landmarks[0])} landmark points.")
 
-cv2.putText(img, "Vishwa Patel - 24000934",
-            (20,120),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255,255,255),
-            1)
+    # Lipstick
+    print("\n-- Lipstick color --")
+    lip_r = int(input("Enter Red value (0-255): "))
+    lip_g = int(input("Enter Green value (0-255): "))
+    lip_b = int(input("Enter Blue value (0-255): "))
 
-cv2.putText(img, "Aditi Patel - 24000839",
-            (20,150),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255,255,255),
-            1)
+    lip_points = get_region_points(landmarks, LIP_INDICES)
+    lip_mask = create_lip_mask(image.shape, lip_points)
+    result = apply_lip_color(image, lip_mask, (lip_b, lip_g, lip_r), opacity=0.7)
 
-cv2.putText(img, "Himani Machhi - 24000848",
-            (20,180),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255,255,255),
-            1)
+    # Blush
+    print("\n-- Blush color --")
+    cheek_r = int(input("Enter Red value (0-255): "))
+    cheek_g = int(input("Enter Green value (0-255): "))
+    cheek_b = int(input("Enter Blue value (0-255): "))
 
+    left_cheek_points = get_region_points(landmarks, LEFT_CHEEK_INDICES)
+    right_cheek_points = get_region_points(landmarks, RIGHT_CHEEK_INDICES)
 
-# Apply a basic baseline operation
-gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-edges = cv2.Canny(gray, 100, 200)
+    left_mask = create_lip_mask(image.shape, left_cheek_points)
+    right_mask = create_lip_mask(image.shape, right_cheek_points)
 
-# Display to confirm GUI window rendering
-cv2.imshow("Pipeline Test", edges)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+    result = apply_lip_color(result, left_mask, (cheek_b, cheek_g, cheek_r), opacity=0.5)
+    result = apply_lip_color(result, right_mask, (cheek_b, cheek_g, cheek_r), opacity=0.5)
+
+    cv2.imwrite("makeup_result.jpg", result)
+    print("\nSaved result to makeup_result.jpg")
