@@ -6,7 +6,8 @@ def create_lip_mask(image_shape, lip_points):
     mask = np.zeros((h, w), dtype=np.uint8)
 
     pixel_points = np.array([(int(x * w), int(y * h)) for x, y in lip_points])
-    cv2.fillPoly(mask, [pixel_points], 255)
+    hull = cv2.convexHull(pixel_points)
+    cv2.fillPoly(mask, [hull], 255)
 
     return mask
 
