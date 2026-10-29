@@ -29,15 +29,13 @@ RIGHT_EYE_INDICES = [
     362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398,
 ]
 
-# Brow (outer → inner) then upper lid (inner → outer) so the fill is a lid strip.
-LEFT_EYESHADOW_INDICES = [
-    70, 63, 105, 66, 107,
-    133, 173, 157, 158, 159, 160, 161, 246, 33,
-]
-RIGHT_EYESHADOW_INDICES = [
-    300, 293, 334, 296, 336,
-    362, 398, 384, 385, 386, 387, 388, 466, 263,
-]
+# Upper lash line (outer → inner). Eyeshadow sits just above this, not up to the brow.
+LEFT_UPPER_LID_INDICES = [33, 246, 161, 160, 159, 158, 157, 173, 133]
+RIGHT_UPPER_LID_INDICES = [263, 466, 388, 387, 386, 385, 384, 398, 362]
+
+# Brow used only to measure lid height so color stops well below the eyebrow.
+LEFT_BROW_INDICES = [70, 63, 105, 66, 107]
+RIGHT_BROW_INDICES = [300, 293, 334, 296, 336]
 
 FACE_LEFT_IDX = 234
 FACE_RIGHT_IDX = 454

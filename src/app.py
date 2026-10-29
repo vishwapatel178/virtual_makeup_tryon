@@ -33,9 +33,6 @@ class MakeupTryOnApp:
 
         self.cap = None
         self.video_detector = FaceDetector(video=True)
-        self.image_detector = FaceDetector(video=False)
-        self.mode = "camera"
-        self.photo_frame = None
         self.current_raw = None
         self.current_processed = None
         self.photo_image = None
@@ -46,13 +43,13 @@ class MakeupTryOnApp:
         self._last_fps_time = time.perf_counter()
         self._frame_count = 0
         self._running = True
-        self.selected_swatch = {"lipstick": 0, "blush": 0, "eyeshadow": 2}
+        self.selected_swatch = {"lipstick": 0, "blush": 0, "eyeshadow": 0}
         self.swatch_buttons: dict[str, list[tk.Canvas]] = {}
 
         self.settings = MakeupSettings(
             lipstick=ProductState(True, rgb_to_bgr(SWATCHES["lipstick"][0][1]), 0.62),
             blush=ProductState(True, rgb_to_bgr(SWATCHES["blush"][0][1]), 0.40),
-            eyeshadow=ProductState(True, rgb_to_bgr(SWATCHES["eyeshadow"][2][1]), 0.50),
+            eyeshadow=ProductState(True, rgb_to_bgr(SWATCHES["eyeshadow"][0][1]), 0.28),
         )
 
         self._build_style()
@@ -138,9 +135,6 @@ class MakeupTryOnApp:
         ttk.Button(actions, text="Use webcam", style="Accent.TButton", command=self.start_camera).pack(
             fill=tk.X, pady=4
         )
-        ttk.Button(actions, text="Upload photo", style="Ghost.TButton", command=self.upload_photo).pack(
-            fill=tk.X, pady=4
-        )
         ttk.Button(actions, text="Save result", style="Ghost.TButton", command=self.save_result).pack(
             fill=tk.X, pady=4
         )
@@ -166,8 +160,6 @@ class MakeupTryOnApp:
 
         def toggle() -> None:
             getattr(self.settings, key).enabled = enabled.get()
-            if self.mode == "photo":
-                self._render_photo()
 
         ttk.Checkbutton(top, text=title, variable=enabled, command=toggle, style="TCheckbutton").pack(
             side=tk.LEFT
@@ -218,13 +210,9 @@ class MakeupTryOnApp:
         for i, btn in enumerate(self.swatch_buttons[product]):
             btn.configure(highlightbackground="#ffffff" if i == index else "#5a3d44")
         self.status.set(f"{product.title()}: {name}")
-        if self.mode == "photo":
-            self._render_photo()
 
     def _set_intensity(self, product: str, value: str) -> None:
         getattr(self.settings, product).intensity = float(value) / 100.0
-        if self.mode == "photo":
-            self._render_photo()
 
     def start_camera(self) -> None:
         self._release_camera()
@@ -233,34 +221,12 @@ class MakeupTryOnApp:
             self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
             self.cap = None
-            self.status.set("Webcam not found — upload a photo instead")
-            messagebox.showwarning(
-                "Webcam",
-                "Could not open the webcam. You can still upload a photo to try on makeup.",
-            )
+            self.status.set("Webcam not found")
+            messagebox.showwarning("Webcam", "Could not open the webcam.")
             return
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.mode = "camera"
-        self.photo_frame = None
         self.status.set("Live camera")
-
-    def upload_photo(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Choose a face photo",
-            filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp *.webp"), ("All files", "*.*")],
-        )
-        if not path:
-            return
-        frame = cv2.imread(path)
-        if frame is None:
-            messagebox.showerror("Upload", "Could not read that image.")
-            return
-        self._release_camera()
-        self.mode = "photo"
-        self.photo_frame = frame
-        self.status.set(f"Photo: {Path(path).name}")
-        self._render_photo()
 
     def save_result(self) -> None:
         if self.current_processed is None:
@@ -284,18 +250,13 @@ class MakeupTryOnApp:
     def _tick(self) -> None:
         if not self._running:
             return
-        if self.mode == "camera" and self.cap is not None:
+        if self.cap is not None:
             ok, frame = self.cap.read()
             if ok:
                 if self.mirror.get():
                     frame = cv2.flip(frame, 1)
                 self._process_and_show(frame, self.video_detector)
         self.root.after(15, self._tick)
-
-    def _render_photo(self) -> None:
-        if self.photo_frame is None:
-            return
-        self._process_and_show(self.photo_frame, self.image_detector)
 
     def _process_and_show(self, frame, detector: FaceDetector) -> None:
         self.current_raw = frame
@@ -306,8 +267,7 @@ class MakeupTryOnApp:
             landmarks = detector.detect_bgr(frame)
             if landmarks:
                 processed = apply_makeup(frame, landmarks, self.settings)
-                if self.mode == "camera":
-                    self.status.set("Face detected — makeup live")
+                self.status.set("Face detected — makeup live")
             else:
                 processed = frame
                 self.status.set("No face detected")
@@ -338,7 +298,6 @@ class MakeupTryOnApp:
         self._release_camera()
         try:
             self.video_detector.close()
-            self.image_detector.close()
         except Exception:
             pass
         self.root.destroy()
