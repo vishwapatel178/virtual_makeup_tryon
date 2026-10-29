@@ -1,88 +1,97 @@
-"""Soft region masks and color blending (lipstick / blush / eyeshadow)."""
+"""Apply lipstick, blush, and eyeshadow from detected landmarks."""
 
 from __future__ import annotations
 
-import cv2
+from dataclasses import dataclass
+
 import numpy as np
 
-
-def points_to_pixels(points, width: int, height: int) -> np.ndarray:
-    return np.array([(int(x * width), int(y * height)) for x, y in points], dtype=np.int32)
-
-
-def create_polygon_mask(image_shape, points, hole_points=None) -> np.ndarray:
-    h, w = image_shape[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
-    pixel_points = points_to_pixels(points, w, h)
-    if len(pixel_points) >= 3:
-        cv2.fillPoly(mask, [pixel_points], 255)
-    if hole_points:
-        hole = points_to_pixels(hole_points, w, h)
-        if len(hole) >= 3:
-            cv2.fillPoly(mask, [hole], 0)
-    return mask
-
-
-def create_lip_mask(image_shape, lip_points):
-    """Original helper: filled polygon from a single point list."""
-    return create_polygon_mask(image_shape, lip_points)
+from landmarks import (
+    INNER_LIP_INDICES,
+    LEFT_CHEEK_INDICES,
+    LEFT_EYE_INDICES,
+    LEFT_EYESHADOW_INDICES,
+    OUTER_LIP_INDICES,
+    RIGHT_CHEEK_INDICES,
+    RIGHT_EYE_INDICES,
+    RIGHT_EYESHADOW_INDICES,
+    face_width_px,
+    get_region_points,
+)
+from masking import (
+    apply_color,
+    create_ellipse_mask,
+    create_polygon_mask,
+    soften_mask,
+)
 
 
-def create_ellipse_mask(image_shape, points, axes: tuple[int, int]) -> np.ndarray:
-    h, w = image_shape[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
-    pixel_points = points_to_pixels(points, w, h)
-    if len(pixel_points) == 0:
-        return mask
-    center = tuple(np.mean(pixel_points, axis=0).astype(int))
-    axes = (max(1, axes[0]), max(1, axes[1]))
-    cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
-    return mask
+@dataclass
+class ProductState:
+    enabled: bool = True
+    color_bgr: tuple[int, int, int] = (80, 60, 180)
+    intensity: float = 0.55
 
 
-def soften_mask(mask: np.ndarray, kernel: int) -> np.ndarray:
-    kernel = max(3, int(kernel) | 1)
-    return cv2.GaussianBlur(mask, (kernel, kernel), 0)
+@dataclass
+class MakeupSettings:
+    lipstick: ProductState
+    blush: ProductState
+    eyeshadow: ProductState
 
 
-def apply_color(
-    image: np.ndarray,
-    mask: np.ndarray,
-    color_bgr: tuple[int, int, int],
-    opacity: float,
-    mode: str = "mix",
-) -> np.ndarray:
-    """Blend a BGR color into `image` using a 0-255 mask and opacity in [0, 1]."""
-    opacity = float(np.clip(opacity, 0.0, 1.0))
-    if opacity <= 0:
+def apply_makeup(image: np.ndarray, landmarks, settings: MakeupSettings) -> np.ndarray:
+    if not landmarks:
         return image
 
-    base = image.astype(np.float32)
-    color = np.array(color_bgr, dtype=np.float32)
-    alpha = (mask.astype(np.float32) / 255.0) * opacity
-    alpha_3 = cv2.merge([alpha, alpha, alpha])
+    result = image
+    h, w = image.shape[:2]
+    face_w = face_width_px(landmarks, w, h)
 
-    if mode == "overlay":
-        base_n = base / 255.0
-        color_n = color / 255.0
-        overlay = np.where(
-            base_n < 0.5,
-            2.0 * base_n * color_n,
-            1.0 - 2.0 * (1.0 - base_n) * (1.0 - color_n),
+    if settings.lipstick.enabled and settings.lipstick.intensity > 0:
+        outer = get_region_points(landmarks, OUTER_LIP_INDICES)
+        inner = get_region_points(landmarks, INNER_LIP_INDICES)
+        mask = create_polygon_mask(image.shape, outer, inner)
+        mask = soften_mask(mask, max(7, face_w // 35))
+        result = apply_color(
+            result,
+            mask,
+            settings.lipstick.color_bgr,
+            settings.lipstick.intensity,
+            mode="multiply",
         )
-        blended = overlay * 255.0
-    elif mode == "multiply":
-        blended = (base / 255.0) * color
-        blended = np.clip(blended, 0, 255)
-    else:
-        colored = np.empty_like(base)
-        colored[:] = color
-        blended = colored
 
-    result = base * (1.0 - alpha_3) + blended * alpha_3
-    return np.clip(result, 0, 255).astype(np.uint8)
+    if settings.blush.enabled and settings.blush.intensity > 0:
+        axes = (max(8, int(face_w * 0.13)), max(6, int(face_w * 0.09)))
+        blur_k = max(21, face_w // 8)
+        for indices in (LEFT_CHEEK_INDICES, RIGHT_CHEEK_INDICES):
+            points = get_region_points(landmarks, indices)
+            mask = create_ellipse_mask(image.shape, points, axes)
+            mask = soften_mask(mask, blur_k)
+            result = apply_color(
+                result,
+                mask,
+                settings.blush.color_bgr,
+                settings.blush.intensity * 0.85,
+                mode="overlay",
+            )
 
+    if settings.eyeshadow.enabled and settings.eyeshadow.intensity > 0:
+        pairs = (
+            (LEFT_EYESHADOW_INDICES, LEFT_EYE_INDICES),
+            (RIGHT_EYESHADOW_INDICES, RIGHT_EYE_INDICES),
+        )
+        for lid_idx, eye_idx in pairs:
+            lid = get_region_points(landmarks, lid_idx)
+            eye = get_region_points(landmarks, eye_idx)
+            mask = create_polygon_mask(image.shape, lid, eye)
+            mask = soften_mask(mask, max(9, face_w // 28))
+            result = apply_color(
+                result,
+                mask,
+                settings.eyeshadow.color_bgr,
+                settings.eyeshadow.intensity,
+                mode="overlay",
+            )
 
-def apply_lip_color(image, mask, color_bgr, opacity=0.5):
-    """Original helper used by the still-image CLI."""
-    return apply_color(image, mask, color_bgr, opacity, mode="mix")
+    return result
