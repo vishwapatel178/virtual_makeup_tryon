@@ -11,7 +11,6 @@ if str(ROOT) not in sys.path:
 
 from app import MakeupTryOnApp
 
-
 def main() -> None:
     MakeupTryOnApp().run()
 

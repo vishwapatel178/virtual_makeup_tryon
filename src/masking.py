@@ -40,6 +40,43 @@ def create_ellipse_mask(image_shape, points, axes: tuple[int, int]) -> np.ndarra
     return mask
 
 
+def create_eyeshadow_mask(
+    image_shape,
+    lid_points,
+    brow_points,
+    eye_points,
+    lid_span: float = 0.22,
+) -> np.ndarray:
+    """Sheer lid wash: a short strip above the lash line that fades before the brow."""
+    h, w = image_shape[:2]
+    lid = np.array(lid_points, dtype=np.float32)
+    brow = np.array(brow_points, dtype=np.float32)
+    if len(lid) < 3 or len(brow) < 2:
+        return np.zeros((h, w), dtype=np.uint8)
+
+    upper = []
+    for point in lid:
+        nearest = brow[np.argmin(np.abs(brow[:, 0] - point[0]))]
+        upper.append((1.0 - lid_span) * point + lid_span * nearest)
+    contour = np.vstack([np.asarray(upper), lid[::-1]]).tolist()
+    mask = create_polygon_mask(image_shape, contour, eye_points)
+
+    lid_px = points_to_pixels(lid_points, w, h)
+    brow_px = points_to_pixels(brow_points, w, h)
+    line = np.zeros((h, w), dtype=np.uint8)
+    if len(lid_px) >= 2:
+        cv2.polylines(line, [lid_px], False, 255, 2)
+    dist = cv2.distanceTransform(cv2.bitwise_not(line), cv2.DIST_L2, 5)
+
+    brow_center = brow_px.mean(axis=0)
+    lid_center = lid_px.mean(axis=0)
+    lid_height = float(np.linalg.norm(brow_center - lid_center))
+    falloff = max(5.0, lid_height * 0.36)
+    weight = np.clip(1.0 - (dist / falloff) ** 1.2, 0.0, 1.0)
+    faded = mask.astype(np.float32) * weight
+    return np.clip(faded, 0, 255).astype(np.uint8)
+
+
 def soften_mask(mask: np.ndarray, kernel: int) -> np.ndarray:
     kernel = max(3, int(kernel) | 1)
     return cv2.GaussianBlur(mask, (kernel, kernel), 0)

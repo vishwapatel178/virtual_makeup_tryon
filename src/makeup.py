@@ -8,19 +8,22 @@ import numpy as np
 
 from landmarks import (
     INNER_LIP_INDICES,
+    LEFT_BROW_INDICES,
     LEFT_CHEEK_INDICES,
     LEFT_EYE_INDICES,
-    LEFT_EYESHADOW_INDICES,
+    LEFT_UPPER_LID_INDICES,
     OUTER_LIP_INDICES,
+    RIGHT_BROW_INDICES,
     RIGHT_CHEEK_INDICES,
     RIGHT_EYE_INDICES,
-    RIGHT_EYESHADOW_INDICES,
+    RIGHT_UPPER_LID_INDICES,
     face_width_px,
     get_region_points,
 )
 from masking import (
     apply_color,
     create_ellipse_mask,
+    create_eyeshadow_mask,
     create_polygon_mask,
     soften_mask,
 )
@@ -78,20 +81,21 @@ def apply_makeup(image: np.ndarray, landmarks, settings: MakeupSettings) -> np.n
 
     if settings.eyeshadow.enabled and settings.eyeshadow.intensity > 0:
         pairs = (
-            (LEFT_EYESHADOW_INDICES, LEFT_EYE_INDICES),
-            (RIGHT_EYESHADOW_INDICES, RIGHT_EYE_INDICES),
+            (LEFT_UPPER_LID_INDICES, LEFT_BROW_INDICES, LEFT_EYE_INDICES),
+            (RIGHT_UPPER_LID_INDICES, RIGHT_BROW_INDICES, RIGHT_EYE_INDICES),
         )
-        for lid_idx, eye_idx in pairs:
+        for lid_idx, brow_idx, eye_idx in pairs:
             lid = get_region_points(landmarks, lid_idx)
+            brow = get_region_points(landmarks, brow_idx)
             eye = get_region_points(landmarks, eye_idx)
-            mask = create_polygon_mask(image.shape, lid, eye)
-            mask = soften_mask(mask, max(9, face_w // 28))
+            mask = create_eyeshadow_mask(image.shape, lid, brow, eye, lid_span=0.22)
+            mask = soften_mask(mask, max(11, face_w // 22))
             result = apply_color(
                 result,
                 mask,
                 settings.eyeshadow.color_bgr,
-                settings.eyeshadow.intensity,
-                mode="overlay",
+                settings.eyeshadow.intensity * 0.38,
+                mode="mix",
             )
 
     return result
