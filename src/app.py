@@ -1,55 +1,114 @@
-"""Desktop GUI: live webcam virtual makeup try-on."""
+"""Desktop GUI: live virtual makeup try-on with professional studio aesthetic."""
 
 from __future__ import annotations
 
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
 import cv2
+import numpy as np
 from PIL import Image, ImageTk
+
+# Attempt Windows High-DPI awareness so fonts and UI are razor-sharp
+try:
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        ctypes.windll.user32.SetProcessDPIAware()
+except Exception:
+    pass
 
 from detection import FaceDetector
 from makeup import MakeupSettings, ProductState, apply_makeup
-from palette import SWATCHES, rgb_to_bgr, rgb_to_hex
+from palette import SWATCHES, bgr_to_rgb, hex_to_bgr, rgb_to_bgr, rgb_to_hex
 
-BG = "#161214"
-PANEL = "#24181c"
-CARD = "#2e1f24"
-ACCENT = "#c45c6a"
-TEXT = "#f4e8ec"
-MUTED = "#b79aa3"
-PREVIEW_BG = "#0e0a0c"
+# Sleek Professional Dark Studio Palette
+BG = "#101014"              # Deep studio charcoal
+PANEL = "#16161c"           # Side panel charcoal
+CARD = "#1e1e26"            # Elevated card surface
+CARD_HOVER = "#262630"      # Elevated hover state
+ACCENT = "#e05368"          # Refined studio rose-coral
+ACCENT_HOVER = "#eb677b"    # Active accent
+ACCENT_LIGHT = "#2a1c22"    # Subtle accent tint
+TEXT = "#f0f0f5"            # Crisp off-white text
+MUTED = "#8e8e9c"           # Secondary muted text
+BORDER = "#2b2b36"          # Subtle 1px studio border
+BORDER_ACTIVE = "#e05368"   # Active selection border
+PREVIEW_BG = "#08080a"      # High-contrast viewport background
 
 
 class MakeupTryOnApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("Virtual Makeup Try-On")
+        self.root.title("Virtual Makeup Studio")
         self.root.configure(bg=BG)
-        self.root.minsize(1100, 680)
-        self.root.geometry("1280x760")
+        self.root.minsize(1060, 680)
+        self.root.geometry("1280x780")
 
         self.cap = None
         self.video_detector = FaceDetector(video=True)
+
         self.current_raw = None
+        self.current_landmarks = None
         self.current_processed = None
         self.photo_image = None
+
         self.mirror = tk.BooleanVar(value=True)
         self.show_original = tk.BooleanVar(value=False)
-        self.status = tk.StringVar(value="Starting camera…")
+        self.status = tk.StringVar(value="Initializing camera...")
         self.fps_text = tk.StringVar(value="0 FPS")
         self._last_fps_time = time.perf_counter()
         self._frame_count = 0
         self._running = True
-        self.selected_swatch = {"lipstick": 0, "blush": 0, "eyeshadow": 0}
-        self.swatch_buttons: dict[str, list[tk.Canvas]] = {}
 
+        self.swatch_buttons: dict[str, list[tk.Canvas]] = {}
+        self.custom_color_buttons: dict[str, tk.Button] = {}
+        self.selected_swatch: dict[str, int | None] = {
+            "foundation": 1,
+            "blush": 1,
+            "eyeshadow": 0,
+            "eyeliner": 0,
+            "brow": 0,
+            "lipstick": 0,
+        }
+
+        # Initialize Professional Studio Makeup Settings
         self.settings = MakeupSettings(
-            lipstick=ProductState(True, rgb_to_bgr(SWATCHES["lipstick"][0][1]), 0.62),
-            blush=ProductState(True, rgb_to_bgr(SWATCHES["blush"][0][1]), 0.40),
-            eyeshadow=ProductState(True, rgb_to_bgr(SWATCHES["eyeshadow"][0][1]), 0.28),
+            foundation=ProductState(
+                enabled=False,
+                color_bgr=rgb_to_bgr(SWATCHES["foundation"][1][1]),
+                intensity=0.28,
+            ),
+            blush=ProductState(
+                enabled=True,
+                color_bgr=rgb_to_bgr(SWATCHES["blush"][1][1]),
+                intensity=0.28,
+            ),
+            eyeshadow=ProductState(
+                enabled=True,
+                color_bgr=rgb_to_bgr(SWATCHES["eyeshadow"][0][1]),
+                intensity=0.32,
+            ),
+            eyeliner=ProductState(
+                enabled=False,
+                color_bgr=rgb_to_bgr(SWATCHES["eyeliner"][0][1]),
+                intensity=0.80,
+                style="classic_wing",
+            ),
+            brow=ProductState(
+                enabled=True,
+                color_bgr=rgb_to_bgr(SWATCHES["brow"][0][1]),
+                intensity=0.25,
+            ),
+            lipstick=ProductState(
+                enabled=True,
+                color_bgr=rgb_to_bgr(SWATCHES["lipstick"][0][1]),
+                intensity=0.60,
+                blend_mode="multiply",  # Velvety matte finish
+            ),
         )
 
         self._build_style()
@@ -64,127 +123,263 @@ class MakeupTryOnApp:
             style.theme_use("clam")
         except tk.TclError:
             pass
+
         style.configure("TFrame", background=BG)
         style.configure("Panel.TFrame", background=PANEL)
         style.configure("Card.TFrame", background=CARD)
-        style.configure("TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 10))
-        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 18))
-        style.configure("Sub.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 10))
-        style.configure("Header.TLabel", background=CARD, foreground=TEXT, font=("Segoe UI Semibold", 11))
-        style.configure("Muted.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 9))
+
+        style.configure("TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 9))
+        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 15))
+        style.configure("Sub.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 8))
+        style.configure("Header.TLabel", background=CARD, foreground=TEXT, font=("Segoe UI Semibold", 10))
+        style.configure("Muted.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 8))
         style.configure("Status.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 9))
+
         style.configure(
             "Accent.TButton",
             background=ACCENT,
-            foreground="white",
-            font=("Segoe UI Semibold", 10),
-            padding=8,
+            foreground="#ffffff",
+            font=("Segoe UI Semibold", 9),
+            padding=(12, 6),
+            borderwidth=0,
         )
-        style.map("Accent.TButton", background=[("active", "#d46b78")])
+        style.map("Accent.TButton", background=[("active", ACCENT_HOVER)])
+
         style.configure(
             "Ghost.TButton",
             background=CARD,
             foreground=TEXT,
-            font=("Segoe UI", 10),
-            padding=8,
+            font=("Segoe UI Semibold", 9),
+            padding=(12, 6),
+            borderwidth=1,
+            relief="solid",
         )
-        style.configure("TCheckbutton", background=CARD, foreground=TEXT, font=("Segoe UI", 9))
+        style.map("Ghost.TButton", background=[("active", CARD_HOVER)])
+
+        style.configure("TCheckbutton", background=CARD, foreground=TEXT, font=("Segoe UI Semibold", 9))
         style.configure("Bar.TCheckbutton", background=BG, foreground=TEXT, font=("Segoe UI", 9))
-        style.configure("TScale", background=CARD, troughcolor="#3d2a30")
+        style.configure("TCombobox", fieldbackground=CARD, background=BORDER, foreground=TEXT)
 
     def _build_ui(self) -> None:
+        # Professional Header Bar
         header = ttk.Frame(self.root, style="TFrame")
-        header.pack(fill=tk.X, padx=20, pady=(16, 8))
-        ttk.Label(header, text="Virtual Makeup Try-On", style="Title.TLabel").pack(anchor=tk.W)
+        header.pack(fill=tk.X, padx=20, pady=(10, 6))
+
+        title_box = tk.Frame(header, bg=BG)
+        title_box.pack(anchor=tk.W)
+
+
+        ttk.Label(title_box, text="Virtual Makeup Studio", style="Title.TLabel").pack(side=tk.LEFT)
+
         ttk.Label(
             header,
-            text="Live face landmarks · lipstick · blush · eyeshadow  ·  runs locally",
             style="Sub.TLabel",
         ).pack(anchor=tk.W, pady=(2, 0))
 
-        body = ttk.Frame(self.root, style="TFrame")
-        body.pack(fill=tk.BOTH, expand=True, padx=20, pady=8)
+        # Main Body Grid: Responsive & non-jumping
+        body = tk.Frame(self.root, bg=BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=20, pady=6)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=0, minsize=370)
+        body.rowconfigure(0, weight=1)
 
-        preview_wrap = tk.Frame(body, bg=PREVIEW_BG, highlightthickness=0)
-        preview_wrap.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 16))
-        self.preview = tk.Label(preview_wrap, bg=PREVIEW_BG, fg=MUTED, text="Opening webcam…")
-        self.preview.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-
-        sidebar = tk.Frame(body, bg=PANEL, width=340)
-        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
-        sidebar.pack_propagate(False)
-
-        canvas = tk.Canvas(sidebar, bg=PANEL, highlightthickness=0)
-        scroll = ttk.Scrollbar(sidebar, orient=tk.VERTICAL, command=canvas.yview)
-        inner = tk.Frame(canvas, bg=PANEL)
-        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor=tk.NW, width=320)
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0), pady=12)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=12)
-
-        for product, title in (
-            ("lipstick", "Lipstick"),
-            ("blush", "Blush"),
-            ("eyeshadow", "Eyeshadow"),
-        ):
-            self._product_card(inner, product, title)
-
-        actions = tk.Frame(inner, bg=PANEL)
-        actions.pack(fill=tk.X, pady=(8, 4))
-        ttk.Button(actions, text="Use webcam", style="Accent.TButton", command=self.start_camera).pack(
-            fill=tk.X, pady=4
+        # Left: Preview container
+        self.preview_container = tk.Frame(
+            body,
+            bg=PREVIEW_BG,
+            highlightthickness=1,
+            highlightbackground=BORDER,
         )
-        ttk.Button(actions, text="Save result", style="Ghost.TButton", command=self.save_result).pack(
-            fill=tk.X, pady=4
+        self.preview_container.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        self.preview_container.pack_propagate(False)
+
+        self.preview = tk.Label(self.preview_container, bg=PREVIEW_BG, fg=MUTED, text="Initializing camera...")
+        self.preview.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        # Right: Scrollable Controls Sidebar (Fixed width, clean layout)
+        sidebar_frame = tk.Frame(
+            body,
+            bg=PANEL,
+            width=370,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+        )
+        sidebar_frame.grid(row=0, column=1, sticky="nsew")
+        sidebar_frame.pack_propagate(False)
+
+        self.canvas = tk.Canvas(sidebar_frame, bg=PANEL, highlightthickness=0)
+        scroll = ttk.Scrollbar(sidebar_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.sidebar_inner = tk.Frame(self.canvas, bg=PANEL)
+
+        self.sidebar_inner.bind(
+            "<Configure>",
+            lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+        )
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.sidebar_inner, anchor=tk.NW, width=348)
+        self.canvas.configure(yscrollcommand=scroll.set)
+
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0), pady=8)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=8)
+
+        # Mousewheel scrolling
+        def _on_mousewheel(event):
+            delta = int(-1 * (event.delta / 120)) if event.delta else 0
+            self.canvas.yview_scroll(delta, "units")
+
+        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Action Buttons (Live Camera & Save Snapshot)
+        actions = tk.Frame(self.sidebar_inner, bg=PANEL)
+        actions.pack(fill=tk.X, pady=(2, 6), padx=4)
+
+        btn_row = tk.Frame(actions, bg=PANEL)
+        btn_row.pack(fill=tk.X)
+        ttk.Button(btn_row, text="Live Camera", style="Accent.TButton", command=self.start_camera).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4)
+        )
+        ttk.Button(btn_row, text="Save Snapshot", style="Ghost.TButton", command=self.save_result).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0)
         )
 
+        # Clean Product Cards (No emojis, sleek layout)
+        self._build_product_card("foundation", "Foundation", extra="foundation")
+        self._build_product_card("blush", "Blush")
+        self._build_product_card("eyeshadow", "Eyeshadow")
+        self._build_product_card("eyeliner", "Eyeliner", extra="eyeliner")
+        self._build_product_card("brow", "Eyebrows")
+        self._build_product_card("lipstick", "Lipstick", extra="lipstick")
+
+        # Footer
         footer = ttk.Frame(self.root, style="TFrame")
-        footer.pack(fill=tk.X, padx=20, pady=(0, 12))
-        ttk.Checkbutton(footer, text="Mirror camera", variable=self.mirror, style="Bar.TCheckbutton").pack(
+        footer.pack(fill=tk.X, padx=20, pady=(6, 8))
+        ttk.Checkbutton(footer, text="Mirror Camera", variable=self.mirror, style="Bar.TCheckbutton").pack(
             side=tk.LEFT, padx=(0, 16)
         )
         ttk.Checkbutton(
-            footer, text="Show original (before)", variable=self.show_original, style="Bar.TCheckbutton"
+            footer, text="Show Original", variable=self.show_original, style="Bar.TCheckbutton"
         ).pack(side=tk.LEFT, padx=(0, 16))
         ttk.Label(footer, textvariable=self.fps_text, style="Status.TLabel").pack(side=tk.RIGHT)
         ttk.Label(footer, textvariable=self.status, style="Status.TLabel").pack(side=tk.RIGHT, padx=16)
 
-    def _product_card(self, parent: tk.Frame, key: str, title: str) -> None:
-        card = tk.Frame(parent, bg=CARD)
-        card.pack(fill=tk.X, pady=6, padx=4)
+    def _build_product_card(self, key: str, title: str, extra: str | None = None) -> None:
+        card = tk.Frame(
+            self.sidebar_inner,
+            bg=CARD,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+        )
+        card.pack(fill=tk.X, pady=3, padx=4)
 
         top = tk.Frame(card, bg=CARD)
-        top.pack(fill=tk.X, padx=10, pady=(10, 4))
-        enabled = tk.BooleanVar(value=True)
+        top.pack(fill=tk.X, padx=10, pady=(6, 3))
+        state = getattr(self.settings, key)
+        enabled_var = tk.BooleanVar(value=state.enabled)
 
         def toggle() -> None:
-            getattr(self.settings, key).enabled = enabled.get()
+            state.enabled = enabled_var.get()
 
-        ttk.Checkbutton(top, text=title, variable=enabled, command=toggle, style="TCheckbutton").pack(
-            side=tk.LEFT
-        )
+        cb = ttk.Checkbutton(top, text=title, variable=enabled_var, command=toggle, style="TCheckbutton")
+        cb.pack(side=tk.LEFT)
 
+        # Extra Options for specific products
+        if extra == "eyeliner":
+            opt_row = tk.Frame(card, bg=CARD)
+            opt_row.pack(fill=tk.X, padx=10, pady=(1, 3))
+            ttk.Label(opt_row, text="Style:", style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+
+            style_map = {
+                "Classic Wing": "classic_wing",
+                "Tightline": "tightline",
+                "Bold Kohl": "bold",
+                "Cat Eye": "cat_eye",
+            }
+            inv_style_map = {v: k for k, v in style_map.items()}
+
+            style_var = tk.StringVar(value=inv_style_map.get(self.settings.eyeliner.style, "Classic Wing"))
+            style_combo = ttk.Combobox(
+                opt_row,
+                textvariable=style_var,
+                values=list(style_map.keys()),
+                state="readonly",
+                width=14,
+            )
+            style_combo.pack(side=tk.LEFT)
+
+            def _on_style_change(_e):
+                self.settings.eyeliner.style = style_map.get(style_var.get(), "classic_wing")
+
+            style_combo.bind("<<ComboboxSelected>>", _on_style_change)
+
+        elif extra == "lipstick":
+            opt_row = tk.Frame(card, bg=CARD)
+            opt_row.pack(fill=tk.X, padx=10, pady=(1, 3))
+            ttk.Label(opt_row, text="Finish:", style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+
+            mode_map = {
+                "Matte": "multiply",
+                "Satin": "overlay",
+                "Tint": "color",
+            }
+            inv_mode_map = {v: k for k, v in mode_map.items()}
+
+            mode_var = tk.StringVar(value=inv_mode_map.get(self.settings.lipstick.blend_mode, "Matte"))
+            mode_combo = ttk.Combobox(
+                opt_row,
+                textvariable=mode_var,
+                values=list(mode_map.keys()),
+                state="readonly",
+                width=11,
+            )
+            mode_combo.pack(side=tk.LEFT)
+
+            def _on_mode_change(_e):
+                self.settings.lipstick.blend_mode = mode_map.get(mode_var.get(), "multiply")
+
+            mode_combo.bind("<<ComboboxSelected>>", _on_mode_change)
+
+        # Swatch Row & Custom Color Picker Button
         swatch_row = tk.Frame(card, bg=CARD)
-        swatch_row.pack(fill=tk.X, padx=10, pady=6)
+        swatch_row.pack(fill=tk.X, padx=10, pady=2)
+
         self.swatch_buttons[key] = []
-        for i, (name, rgb) in enumerate(SWATCHES[key]):
+        for i, (name, rgb) in enumerate(SWATCHES.get(key, [])):
             btn = tk.Canvas(
                 swatch_row,
-                width=28,
-                height=28,
+                width=20,
+                height=20,
                 bg=rgb_to_hex(rgb),
-                highlightthickness=2,
-                highlightbackground="#ffffff" if i == self.selected_swatch[key] else "#5a3d44",
+                highlightthickness=1,
+                highlightbackground=BORDER_ACTIVE if i == self.selected_swatch.get(key) else BORDER,
                 cursor="hand2",
             )
-            btn.grid(row=i // 8, column=i % 8, padx=3, pady=3)
+            btn.grid(row=i // 7, column=i % 7, padx=2, pady=2)
             btn.bind("<Button-1>", lambda _e, p=key, idx=i: self._select_swatch(p, idx))
-            btn.bind("<Enter>", lambda _e, n=name: self.status.set(n))
+            btn.bind("<Enter>", lambda _e, n=name: self.status.set(f"{title}: {n}"))
             self.swatch_buttons[key].append(btn)
 
+        # Custom Color Picker button
+        custom_row = tk.Frame(card, bg=CARD)
+        custom_row.pack(fill=tk.X, padx=10, pady=(1, 3))
+        custom_btn = tk.Button(
+            custom_row,
+            text="Custom Color...",
+            bg=CARD_HOVER,
+            fg=TEXT,
+            activebackground=BORDER,
+            activeforeground=TEXT,
+            font=("Segoe UI", 8),
+            relief="flat",
+            cursor="hand2",
+            padx=6,
+            pady=1,
+            command=lambda p=key, t=title: self._choose_custom_color(p, t),
+        )
+        custom_btn.pack(side=tk.LEFT)
+        self.custom_color_buttons[key] = custom_btn
+
+        # Intensity Slider
         intensity_row = tk.Frame(card, bg=CARD)
-        intensity_row.pack(fill=tk.X, padx=10, pady=(0, 10))
+        intensity_row.pack(fill=tk.X, padx=10, pady=(1, 5))
         ttk.Label(intensity_row, text="Intensity", style="Muted.TLabel").pack(anchor=tk.W)
         scale = tk.Scale(
             intensity_row,
@@ -194,22 +389,41 @@ class MakeupTryOnApp:
             bg=CARD,
             fg=TEXT,
             highlightthickness=0,
-            troughcolor="#3d2a30",
+            troughcolor="#121217",
             activebackground=ACCENT,
-            length=260,
             showvalue=True,
             command=lambda val, p=key: self._set_intensity(p, val),
         )
-        scale.set(int(getattr(self.settings, key).intensity * 100))
+        scale.set(int(state.intensity * 100))
         scale.pack(fill=tk.X)
 
     def _select_swatch(self, product: str, index: int) -> None:
         self.selected_swatch[product] = index
         name, rgb = SWATCHES[product][index]
         getattr(self.settings, product).color_bgr = rgb_to_bgr(rgb)
-        for i, btn in enumerate(self.swatch_buttons[product]):
-            btn.configure(highlightbackground="#ffffff" if i == index else "#5a3d44")
+        for i, btn in enumerate(self.swatch_buttons.get(product, [])):
+            btn.configure(highlightbackground=BORDER_ACTIVE if i == index else BORDER)
+        self.custom_color_buttons[product].configure(bg=CARD_HOVER, text="Custom Color...", fg=TEXT)
         self.status.set(f"{product.title()}: {name}")
+
+    def _choose_custom_color(self, product: str, title: str) -> None:
+        cur_state = getattr(self.settings, product)
+        cur_rgb = bgr_to_rgb(cur_state.color_bgr)
+        cur_hex = rgb_to_hex(cur_rgb)
+        color = colorchooser.askcolor(color=cur_hex, title=f"Choose {title} Shade")
+        if color and color[0]:
+            rgb = (int(color[0][0]), int(color[0][1]), int(color[0][2]))
+            cur_state.color_bgr = rgb_to_bgr(rgb)
+            self.selected_swatch[product] = None
+            for btn in self.swatch_buttons.get(product, []):
+                btn.configure(highlightbackground=BORDER)
+            hex_val = color[1]
+            self.custom_color_buttons[product].configure(
+                bg=hex_val,
+                fg="#000000" if (rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114) > 150 else "#ffffff",
+                text=f"Custom: {hex_val}",
+            )
+            self.status.set(f"{title}: Custom {hex_val}")
 
     def _set_intensity(self, product: str, value: str) -> None:
         getattr(self.settings, product).intensity = float(value) / 100.0
@@ -222,25 +436,25 @@ class MakeupTryOnApp:
         if not self.cap.isOpened():
             self.cap = None
             self.status.set("Webcam not found")
-            messagebox.showwarning("Webcam", "Could not open the webcam.")
+            messagebox.showinfo("Webcam", "Could not open webcam.")
             return
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.status.set("Live camera")
+        self.status.set("Camera active")
 
     def save_result(self) -> None:
         if self.current_processed is None:
-            messagebox.showinfo("Save", "Nothing to save yet.")
+            messagebox.showinfo("Save Snapshot", "No active frame to save.")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".jpg",
             filetypes=[("JPEG", "*.jpg"), ("PNG", "*.png")],
-            initialfile="makeup_tryon.jpg",
+            initialfile="makeup_snapshot.jpg",
         )
         if not path:
             return
         cv2.imwrite(path, self.current_processed)
-        self.status.set(f"Saved {Path(path).name}")
+        self.status.set(f"Saved snapshot: {Path(path).name}")
 
     def _release_camera(self) -> None:
         if self.cap is not None:
@@ -258,16 +472,17 @@ class MakeupTryOnApp:
                 self._process_and_show(frame, self.video_detector)
         self.root.after(15, self._tick)
 
-    def _process_and_show(self, frame, detector: FaceDetector) -> None:
+    def _process_and_show(self, frame: np.ndarray, detector: FaceDetector) -> None:
         self.current_raw = frame
         if self.show_original.get():
             processed = frame
-            self.status.set("Original (makeup hidden)")
+            self.status.set("Original face (makeup hidden)")
         else:
             landmarks = detector.detect_bgr(frame)
+            self.current_landmarks = landmarks
             if landmarks:
                 processed = apply_makeup(frame, landmarks, self.settings)
-                self.status.set("Face detected — makeup live")
+                self.status.set("Face detected - Real-time tracking")
             else:
                 processed = frame
                 self.status.set("No face detected")
@@ -275,12 +490,18 @@ class MakeupTryOnApp:
         self._show_frame(processed)
         self._update_fps()
 
-    def _show_frame(self, frame) -> None:
+    def _show_frame(self, frame: np.ndarray) -> None:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
-        max_w = max(self.preview.winfo_width(), 640)
-        max_h = max(self.preview.winfo_height(), 480)
-        image.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+
+        box_w = max(self.preview_container.winfo_width() - 8, 320)
+        box_h = max(self.preview_container.winfo_height() - 8, 240)
+
+        img_w, img_h = image.size
+        ratio = min(box_w / img_w, box_h / img_h)
+        new_size = (max(1, int(img_w * ratio)), max(1, int(img_h * ratio)))
+
+        image = image.resize(new_size, Image.Resampling.BILINEAR)
         self.photo_image = ImageTk.PhotoImage(image)
         self.preview.configure(image=self.photo_image, text="")
 
@@ -304,3 +525,8 @@ class MakeupTryOnApp:
 
     def run(self) -> None:
         self.root.mainloop()
+
+
+if __name__ == "__main__":
+    app = MakeupTryOnApp()
+    app.run()
