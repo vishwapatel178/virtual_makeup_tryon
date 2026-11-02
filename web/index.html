@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0"
+    />
+    <title>Virtual Makeup Studio</title>
+    <link rel="stylesheet" href="style.css" />
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <!-- MediaPipe Face Mesh Dependencies -->
+    <script
+      src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"
+      crossorigin="anonymous"
+    ></script>
+  </head>
+  <body>
+    <div class="app-layout">
+      <!-- Top Professional Studio Header -->
+      <header class="app-header">
+        <div class="brand">
+          <div class="brand-text">
+            <h1 class="brand-title">Virtual Makeup Studio</h1>
+          </div>
+        </div>
+        <div class="header-status">
+          <span class="status-indicator" id="statusDot"></span>
+          <span class="status-text" id="statusText"
+            >Initializing studio camera...</span
+          >
+          <span class="fps-badge" id="fpsBadge">0 FPS</span>
+        </div>
+      </header>
+
+      <!-- Main Workspace Grid -->
+      <main class="app-main">
+        <!-- Left/Center: Viewport Area -->
+        <section class="viewport-section" aria-label="Camera Preview">
+          <div class="canvas-wrapper" id="canvasWrapper">
+            <canvas id="outputCanvas" width="1280" height="720"></canvas>
+            <video id="webcamVideo" playsinline autoplay muted hidden></video>
+            <div class="loading-overlay" id="loadingOverlay">
+              <div class="spinner-ring"></div>
+              <p id="loadingMsg">Loading face tracking engine...</p>
+            </div>
+          </div>
+
+          <!-- Viewport Toolbar -->
+          <div class="viewport-toolbar">
+            <div class="toolbar-group">
+              <button class="btn btn-primary" id="btnCamera">
+                <span>Live Camera</span>
+              </button>
+              <button class="btn btn-secondary" id="btnSave">
+                <span>Save Snapshot</span>
+              </button>
+            </div>
+
+            <div class="toolbar-group">
+              <label class="toggle-control">
+                <input type="checkbox" id="chkMirror" checked />
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">Mirror</span>
+              </label>
+              <label class="toggle-control">
+                <input type="checkbox" id="chkOriginal" />
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">Show Original</span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <!-- Right: Responsive Controls Sidebar -->
+        <aside class="controls-sidebar" aria-label="Cosmetic Controls">
+          <div class="sidebar-header">
+            <h2>Cosmetics</h2>
+            <button class="btn-text" id="btnResetAll">Reset</button>
+          </div>
+
+          <div class="cards-list">
+            <!-- 1. Foundation -->
+            <article class="product-card" id="card-foundation">
+              <div class="card-top">
+                <label class="product-toggle">
+                  <input type="checkbox" id="chk-foundation" />
+                  <span class="switch-ui"></span>
+                  <span class="product-name">Foundation</span>
+                </label>
+              </div>
+              <div class="card-body">
+                <div class="color-picker-row">
+                  <span class="picker-label">Shade:</span>
+                  <input
+                    type="color"
+                    id="color-foundation"
+                    value="#f0d2ba"
+                    class="custom-color-input"
+                    title="Choose custom shade"
+                  />
+                  <div class="swatches" data-product="foundation"></div>
+                </div>
+                <div class="slider-row">
+                  <div class="slider-header">
+                    <span>Coverage</span>
+                    <span class="slider-val" id="val-foundation">28%</span>
+                  </div>
+                  <input
+                    type="range"
+                    id="intensity-foundation"
+                    min="0"
+                    max="100"
+                    value="28"
+                    class="range-slider"
+                  />
+                </div>
+              </div>
+            </article>
+
+            <!-- 2. Blush -->
+            <article class="product-card" id="card-blush">
+              <div class="card-top">
+                <label class="product-toggle">
+                  <input type="checkbox" id="chk-blush" checked />
+                  <span class="switch-ui"></span>
+                  <span class="product-name">Blush</span>
+                </label>
+              </div>
+              <div class="card-body">
+                <div class="color-picker-row">
+                  <span class="picker-label">Shade:</span>
+                  <input
+                    type="color"
+                    id="color-blush"
+                    value="#e8a090"
+                    class="custom-color-input"
+                    title="Choose custom shade"
+                  />
+                  <div class="swatches" data-product="blush"></div>
+                </div>
+                <div class="slider-row">
+                  <div class="slider-header">
+                    <span>Intensity</span>
+                    <span class="slider-val" id="val-blush">28%</span>
+                  </div>
+                  <input
+                    type="range"
+                    id="intensity-blush"
+                    min="0"
+                    max="100"
+                    value="28"
+                    class="range-slider"
+                  />
+                </div>
+              </div>
+            </article>
+
+            <!-- 3. Eyeshadow -->
+            <article class="product-card" id="card-eyeshadow">
+              <div class="card-top">
+                <label class="product-toggle">
+                  <input type="checkbox" id="chk-eyeshadow" checked />
+                  <span class="switch-ui"></span>
+                  <span class="product-name">Eyeshadow</span>
+                </label>
+              </div>
+              <div class="card-body">
+                <div class="color-picker-row">
+                  <span class="picker-label">Shade:</span>
+                  <input
+                    type="color"
+                    id="color-eyeshadow"
+                    value="#c4a484"
+                    class="custom-color-input"
+                    title="Choose custom shade"
+                  />
+                  <div class="swatches" data-product="eyeshadow"></div>
+                </div>
+                <div class="slider-row">
+                  <div class="slider-header">
+                    <span>Intensity</span>
+                    <span class="slider-val" id="val-eyeshadow">32%</span>
+                  </div>
+                  <input
+                    type="range"
+                    id="intensity-eyeshadow"
+                    min="0"
+                    max="100"
+                    value="32"
+                    class="range-slider"
+                  />
+                </div>
+              </div>
+            </article>
+
+            <!-- 4. Eyeliner -->
+            <article class="product-card" id="card-eyeliner">
+              <div class="card-top">
+                <label class="product-toggle">
+                  <input type="checkbox" id="chk-eyeliner" />
+                  <span class="switch-ui"></span>
+                  <span class="product-name">Eyeliner</span>
+                </label>
+              </div>
+              <div class="card-body">
+                <div class="shape-selector-row">
+                  <span class="picker-label">Style:</span>
+                  <select id="select-eyeliner-shape" class="select-dropdown">
+                    <option value="classic_wing">Classic Wing</option>
+                    <option value="tightline">Tightline</option>
+                    <option value="bold">Bold Kohl</option>
+                    <option value="cat_eye">Cat Eye</option>
+                  </select>
+                </div>
+                <div class="color-picker-row">
+                  <span class="picker-label">Shade:</span>
+                  <input
+                    type="color"
+                    id="color-eyeliner"
+                    value="#121214"
+                    class="custom-color-input"
+                    title="Choose custom shade"
+                  />
+                  <div class="swatches" data-product="eyeliner"></div>
+                </div>
+                <div class="slider-row">
+                  <div class="slider-header">
+                    <span>Intensity</span>
+                    <span class="slider-val" id="val-eyeliner">80%</span>
+                  </div>
+                  <input
+                    type="range"
+                    id="intensity-eyeliner"
+                    min="0"
+                    max="100"
+                    value="80"
+                    class="range-slider"
+                  />
+                </div>
+              </div>
+            </article>
+
+            <!-- 5. Eyebrows -->
+            <article class="product-card" id="card-brow">
+              <div class="card-top">
+                <label class="product-toggle">
+                  <input type="checkbox" id="chk-brow" checked />
+                  <span class="switch-ui"></span>
+                  <span class="product-name">Eyebrows</span>
+                </label>
+              </div>
+              <div class="card-body">
+                <div class="color-picker-row">
+                  <span class="picker-label">Shade:</span>
+                  <input
+                    type="color"
+                    id="color-brow"
+                    value="#4b342a"
+                    class="custom-color-input"
+                    title="Choose custom shade"
+                  />
+                  <div class="swatches" data-product="brow"></div>
+                </div>
+                <div class="slider-row">
+                  <div class="slider-header">
+                    <span>Intensity</span>
+                    <span class="slider-val" id="val-brow">25%</span>
+                  </div>
+                  <input
+                    type="range"
+                    id="intensity-brow"
+                    min="0"
+                    max="100"
+                    value="25"
+                    class="range-slider"
+                  />
+                </div>
+              </div>
+            </article>
+
+            <!-- 6. Lipstick -->
+            <article class="product-card" id="card-lipstick">
+              <div class="card-top">
+                <label class="product-toggle">
+                  <input type="checkbox" id="chk-lipstick" checked />
+                  <span class="switch-ui"></span>
+                  <span class="product-name">Lipstick</span>
+                </label>
+              </div>
+              <div class="card-body">
+                <div class="blend-selector-row">
+                  <span class="picker-label">Finish:</span>
+                  <select id="select-lipstick-blend" class="select-dropdown">
+                    <option value="multiply" selected>Matte</option>
+                    <option value="overlay">Satin</option>
+                    <option value="color">Tint</option>
+                  </select>
+                </div>
+                <div class="color-picker-row">
+                  <span class="picker-label">Shade:</span>
+                  <input
+                    type="color"
+                    id="color-lipstick"
+                    value="#c41e3a"
+                    class="custom-color-input"
+                    title="Choose custom shade"
+                  />
+                  <div class="swatches" data-product="lipstick"></div>
+                </div>
+                <div class="slider-row">
+                  <div class="slider-header">
+                    <span>Pigment</span>
+                    <span class="slider-val" id="val-lipstick">60%</span>
+                  </div>
+                  <input
+                    type="range"
+                    id="intensity-lipstick"
+                    min="0"
+                    max="100"
+                    value="60"
+                    class="range-slider"
+                  />
+                </div>
+              </div>
+            </article>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
