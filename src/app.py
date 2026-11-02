@@ -1,11 +1,14 @@
 """Virtual Makeup Studio — Professional Real-Time Virtual Try-On Desktop Application.
 
-Features:
-- Decoupled multi-threaded camera capture and background makeup rendering pipeline (30+ FPS).
-- Zero main-thread blocking for silky smooth 60 FPS UI responsiveness.
-- Google Meet-grade studio auto-lighting and low-light enhancement.
-- Commercial luxury beauty studio UI: cosmetic pearl swatches, live shade badges,
-  category navigation, 1-click curated look presets, and interactive Before/After comparison.
+Redesigned following commercial luxury beauty tech aesthetic (Image 3):
+- Clear visual hierarchy, generous spacing, restrained use of color, and uncluttered layout.
+- Media Foundation (CAP_MSMF) priority without forced manual exposure flags, plus
+  adaptive exposure normalization and an interactive Brightness slider so the feed
+  matches the native Windows Camera App perfectly.
+- Clean, unobstructed camera viewport (no split-lines or overlaid sliders on the face).
+- Beauty features pill buttons, circular cosmetic pans with 'None' (⊘) toggle,
+  finish options, coverage slider, camera brightness control, and high-quality UI icons.
+- Decoupled multi-threaded 30+ FPS capture and 60 FPS responsive UI pipeline.
 """
 
 from __future__ import annotations
@@ -36,29 +39,62 @@ from makeup import MakeupSettings, ProductState, apply_makeup
 from palette import SWATCHES, bgr_to_rgb, hex_to_bgr, rgb_to_bgr, rgb_to_hex
 
 # ---------------------------------------------------------------------------
-# Luxury Beauty Studio Theme Palette
+# Clean Modern Studio Theme Palette (White & Slate with Luxury Crimson Accent)
 # ---------------------------------------------------------------------------
-BG = "#0c0d12"             # Deep velvet obsidian background
-SURFACE = "#14161f"        # Elevated satin sidebar surface
-CARD_BG = "#1b1d28"        # Sleek product card background
-CARD_ACTIVE = "#222534"    # Active product card highlight
-CARD_BORDER = "#282b3c"    # Subtle 1px studio border
-CARD_BORDER_ON = "#e11d48" # Rose border when product is active
+BG = "#ffffff"             # Pure crisp white background
+SURFACE = "#fafbfc"        # Soft elevated studio surface
+SURFACE_CARD = "#ffffff"   # Card background
+BORDER_LIGHT = "#e8ecf2"   # Clean hairline border
+BORDER_SUBTLE = "#f1f5f9"  # Divider line
 
-ACCENT = "#e11d48"         # Radiant Rose (luxury cosmetic brand accent)
-ACCENT_HOVER = "#f43f5e"   # Bright Rose hover
-ACCENT_MUTED = "#3e1823"   # Soft rose tint
+TEXT_PRIMARY = "#0f172a"   # Deep bold charcoal
+TEXT_SECONDARY = "#475569" # Sophisticated slate
+TEXT_MUTED = "#94a3b8"     # Subtle placeholder slate
 
-TEXT_PRIMARY = "#f8fafc"   # Crisp pearl white
-TEXT_SECONDARY = "#94a3b8" # Soft slate taupe
-TEXT_MUTED = "#64748b"     # Subtle placeholder muted text
+ACCENT = "#c41e3a"         # Luxury cosmetic crimson / cherry (matches reference)
+ACCENT_HOVER = "#b91c1c"   # Rich deep crimson
+ACCENT_SOFT = "#fdf2f4"    # Gentle rose blush tint
+ACCENT_BORDER = "#fca5a5"  # Rose accent border
 
-VIEWPORT_BG = "#08090d"    # Deep black viewport backdrop
-LIVE_EMERALD = "#10b981"   # Glowing studio indicator green
+DARK_PILL_BG = "#0f172a"   # Active pill background (deep charcoal/black)
+DARK_PILL_FG = "#ffffff"   # Active pill text
+
+VIEWPORT_BG = "#f1f5f9"    # High-key neutral camera container backdrop
+LIVE_EMERALD = "#10b981"   # Glowing status indicator green
 
 
 # ---------------------------------------------------------------------------
-# Curated 1-Click Look Presets (Commercial Beauty Experience)
+# Adaptive Camera Tone & Brightness Balancer
+# ---------------------------------------------------------------------------
+def apply_camera_tone_and_brightness(frame: np.ndarray, user_brightness: float = 1.0, auto_balance: bool = True) -> np.ndarray:
+    """
+    Ensures camera brightness and color quality matches the Windows Camera App.
+    If the device camera delivers a dark frame, smoothly lifts midtones and shadows
+    without clipping highlights. If already bright (e.g. friend's laptop), leaves it natural.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    mean_lum = float(np.mean(gray))
+
+    # Calculate adaptive gamma lift if camera is underexposed
+    gamma = 1.0
+    if auto_balance and mean_lum < 118:
+        gamma = np.clip(np.log(128.0 / 255.0) / np.log(max(10.0, mean_lum) / 255.0), 0.70, 1.0)
+
+    # Combine with user-selected brightness multiplier
+    lut = np.zeros(256, dtype=np.uint8)
+    for i in range(256):
+        val = ((i / 255.0) ** gamma) * 255.0 * user_brightness
+        # Soft-knee highlight compression to prevent clipping bright background walls
+        if val > 215.0:
+            over = val - 215.0
+            val = val - (over ** 2) / (2.0 * max(1.0, 255.0 * user_brightness - 215.0))
+        lut[i] = int(np.clip(val, 0, 255))
+
+    return cv2.LUT(frame, lut)
+
+
+# ---------------------------------------------------------------------------
+# Curated 1-Click Look Presets
 # ---------------------------------------------------------------------------
 PRESET_LOOKS: dict[str, dict] = {
     "Natural Glow": {
@@ -105,10 +141,10 @@ PRESET_LOOKS: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
-# Background Non-Blocking Camera Stream
+# Background Non-Blocking Camera Stream (Media Foundation Priority)
 # ---------------------------------------------------------------------------
 class CameraStream:
-    """Dedicated background capture thread that eliminates hardware camera sync lag."""
+    """Dedicated background capture thread that prioritizes Windows Media Foundation."""
 
     def __init__(self, src: int = 0) -> None:
         self.src = src
@@ -121,8 +157,11 @@ class CameraStream:
 
     def start(self) -> bool:
         self.stop()
-        # DirectShow on Windows with hardware MJPEG negotiation
-        self.cap = cv2.VideoCapture(self.src, cv2.CAP_DSHOW)
+        # 1. Prioritize Microsoft Media Foundation (CAP_MSMF) — same backend as Windows Camera App
+        self.cap = cv2.VideoCapture(self.src, cv2.CAP_MSMF)
+        if not self.cap.isOpened():
+            # 2. Fall back to DirectShow
+            self.cap = cv2.VideoCapture(self.src, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             self.cap = cv2.VideoCapture(self.src)
 
@@ -131,9 +170,7 @@ class CameraStream:
             self._is_active = False
             return False
 
-        # Configure camera hardware properties for smooth 30 FPS
-        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-        self.cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+        # Request 720p at 30 FPS without breaking hardware auto-exposure flags
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
@@ -181,37 +218,14 @@ class CameraStream:
 
 
 # ---------------------------------------------------------------------------
-# Studio Auto-Lighting & Low-Light Enhancement (Google Meet Grade)
-# ---------------------------------------------------------------------------
-def enhance_studio_lighting(frame: np.ndarray) -> np.ndarray:
-    """
-    Subtle dynamic range and exposure compensation in low-light environments.
-    Mimics Google Meet's auto low-light adjustment for bright, glowing, clean video.
-    """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    mean_lum = float(np.mean(gray))
-
-    # Apply adaptive luminance correction if underexposed
-    if mean_lum < 135:
-        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
-        cl = clahe.apply(l)
-        l_enhanced = cv2.addWeighted(cl, 0.60, l, 0.40, 0)
-        limg = cv2.merge((l_enhanced, a, b))
-        return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
-    return frame
-
-
-# ---------------------------------------------------------------------------
 # Main Virtual Makeup Studio Application
 # ---------------------------------------------------------------------------
 class MakeupTryOnApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("Virtual Makeup Studio — Live Beauty Try-On")
+        self.root.title("Virtual Makeup Try-On")
         self.root.configure(bg=BG)
-        self.root.minsize(1120, 720)
+        self.root.minsize(1160, 740)
         self.root.geometry("1340x820")
 
         # Capture and Threading State
@@ -219,11 +233,12 @@ class MakeupTryOnApp:
         self.detector = FaceDetector(video=True)
         self._running = True
 
-        # Pure Python primitives for thread-safe cross-thread state
+        # Thread-safe state primitives (Python-level, no Tk calls from worker)
         self._settings_lock = threading.Lock()
         self.is_mirrored = True
         self.is_showing_original = False
         self.is_studio_light_on = True
+        self.camera_brightness_factor = 1.08  # Default calibrated boost for natural camera exposure
 
         # Latest Rendered Frames for Display and Snapshot
         self._display_lock = threading.Lock()
@@ -232,18 +247,20 @@ class MakeupTryOnApp:
         self._face_detected = False
         self._pipeline_fps = 0.0
 
-        # UI String/Control Variables (Main Thread Only)
-        self.status_text = tk.StringVar(value="Initializing camera...")
+        # Active Product Selected in UI (Lipstick by default)
+        self.active_feature = "lipstick"
+
+        # UI String/Control Variables
+        self.status_text = tk.StringVar(value="Camera active · Live Try-On Ready")
         self.fps_badge_text = tk.StringVar(value="-- FPS")
-        self.tracking_badge_text = tk.StringVar(value="Detecting face...")
-        self.selected_category = tk.StringVar(value="All")
+        self.tracking_badge_text = tk.StringVar(value="● Face Tracking Active")
+        self.color_title_text = tk.StringVar(value="Color · Classic Red")
 
         # Color Swatches Tracking
         self.swatch_canvases: dict[str, list[tk.Canvas]] = {}
-        self.custom_color_chips: dict[str, tk.Canvas] = {}
-        self.shade_labels: dict[str, tk.Label] = {}
-        self.card_frames: dict[str, tk.Frame] = {}
-        self.toggle_buttons: dict[str, tk.Button] = {}
+        self.none_canvases: dict[str, tk.Canvas] = {}
+        self.feature_buttons: dict[str, tk.Button] = {}
+        self.finish_buttons: dict[str, dict[str, tk.Button]] = {}
         self.selected_swatch: dict[str, int | None] = {
             "foundation": 1,
             "blush": 1,
@@ -312,75 +329,24 @@ class MakeupTryOnApp:
             pass
 
         style.configure("TFrame", background=BG)
-        style.configure("Surface.TFrame", background=SURFACE)
-        style.configure("TLabel", background=SURFACE, foreground=TEXT_PRIMARY, font=("Segoe UI", 9))
-        style.configure("Muted.TLabel", background=SURFACE, foreground=TEXT_MUTED, font=("Segoe UI", 8))
-        style.configure("Header.TLabel", background=SURFACE, foreground=TEXT_PRIMARY, font=("Segoe UI Semibold", 10))
-        style.configure("Brand.TLabel", background=BG, foreground=TEXT_PRIMARY, font=("Segoe UI Semibold", 14))
-
-        style.configure(
-            "Accent.TButton",
-            background=ACCENT,
-            foreground="#ffffff",
-            font=("Segoe UI Semibold", 9),
-            padding=(14, 7),
-            borderwidth=0,
-        )
-        style.map("Accent.TButton", background=[("active", ACCENT_HOVER)])
-
-        style.configure(
-            "Ghost.TButton",
-            background=CARD_BG,
-            foreground=TEXT_PRIMARY,
-            font=("Segoe UI Semibold", 9),
-            padding=(12, 6),
-            borderwidth=1,
-            relief="solid",
-        )
-        style.map("Ghost.TButton", background=[("active", CARD_ACTIVE)])
-        style.configure("TCombobox", fieldbackground=CARD_BG, background=CARD_BORDER, foreground=TEXT_PRIMARY)
+        style.configure("TLabel", background=BG, foreground=TEXT_PRIMARY, font=("Segoe UI", 9))
 
     def _build_ui(self) -> None:
         # -------------------------------------------------------------------
-        # Top Header Bar
+        # 1. Top Minimalist Header (Matches Image 3)
         # -------------------------------------------------------------------
-        header = tk.Frame(self.root, bg=BG)
-        header.pack(fill=tk.X, padx=22, pady=(12, 8))
+        header = tk.Frame(self.root, bg=BG, padx=28, pady=16)
+        header.pack(fill=tk.X)
 
-        brand_frame = tk.Frame(header, bg=BG)
-        brand_frame.pack(side=tk.LEFT)
-
-        # Glowing beauty logo pill
-        logo_badge = tk.Label(
-            brand_frame,
-            text="PRO",
-            font=("Segoe UI Black", 8),
-            bg=ACCENT,
-            fg="#ffffff",
-            padx=5,
-            pady=1,
-        )
-        logo_badge.pack(side=tk.LEFT, padx=(0, 8))
-
-        title_label = tk.Label(
-            brand_frame,
-            text="Virtual Makeup Studio",
-            font=("Segoe UI Semibold", 14),
+        title_lbl = tk.Label(
+            header,
+            text="VIRTUAL MAKEUP TRY-ON",
+            font=("Segoe UI Black", 12),
             bg=BG,
             fg=TEXT_PRIMARY,
         )
-        title_label.pack(side=tk.LEFT)
+        title_lbl.pack(side=tk.LEFT)
 
-        subtitle_label = tk.Label(
-            brand_frame,
-            text="· Real-Time AR Beauty Try-On",
-            font=("Segoe UI", 10),
-            bg=BG,
-            fg=TEXT_MUTED,
-        )
-        subtitle_label.pack(side=tk.LEFT, padx=(4, 0))
-
-        # Status badge in header
         status_box = tk.Frame(header, bg=BG)
         status_box.pack(side=tk.RIGHT)
 
@@ -388,29 +354,32 @@ class MakeupTryOnApp:
         status_dot.pack(side=tk.LEFT, padx=(0, 6))
         status_dot.create_oval(1, 1, 7, 7, fill=LIVE_EMERALD, outline="")
 
-        self.status_label = tk.Label(
+        self.status_lbl = tk.Label(
             status_box,
             textvariable=self.status_text,
             font=("Segoe UI", 9),
             bg=BG,
             fg=TEXT_SECONDARY,
         )
-        self.status_label.pack(side=tk.LEFT)
+        self.status_lbl.pack(side=tk.LEFT)
+
+        # Subtle hairline separator
+        tk.Frame(self.root, height=1, bg=BORDER_LIGHT).pack(fill=tk.X)
 
         # -------------------------------------------------------------------
-        # Main Layout Grid (Viewport Hero + Right Control Studio)
+        # 2. Main Workspace Layout (Two Columns: Viewport Left, Controls Right)
         # -------------------------------------------------------------------
-        main_grid = tk.Frame(self.root, bg=BG)
-        main_grid.pack(fill=tk.BOTH, expand=True, padx=22, pady=(0, 10))
-        main_grid.columnconfigure(0, weight=1)
-        main_grid.columnconfigure(1, weight=0, minsize=410)
-        main_grid.rowconfigure(0, weight=1)
+        workspace = tk.Frame(self.root, bg=BG, padx=28, pady=20)
+        workspace.pack(fill=tk.BOTH, expand=True)
+        workspace.columnconfigure(0, weight=1)
+        workspace.columnconfigure(1, weight=0, minsize=490)
+        workspace.rowconfigure(0, weight=1)
 
         # -------------------------------------------------------------------
-        # Left Side: Hero Viewport Container
+        # Left Side: Camera Hero Viewport (Clean, Uncluttered, No Split Line or Sliders)
         # -------------------------------------------------------------------
-        viewport_wrapper = tk.Frame(main_grid, bg=BG)
-        viewport_wrapper.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        viewport_wrapper = tk.Frame(workspace, bg=BG)
+        viewport_wrapper.grid(row=0, column=0, sticky="nsew", padx=(0, 24))
         viewport_wrapper.rowconfigure(0, weight=1)
         viewport_wrapper.columnconfigure(0, weight=1)
 
@@ -418,506 +387,510 @@ class MakeupTryOnApp:
             viewport_wrapper,
             bg=VIEWPORT_BG,
             highlightthickness=1,
-            highlightbackground=CARD_BORDER,
+            highlightbackground=BORDER_LIGHT,
         )
         self.preview_container.grid(row=0, column=0, sticky="nsew")
         self.preview_container.pack_propagate(False)
 
-        # Video Preview Display Label
+        # Clean Video Preview Display Label (Hero Center)
         self.preview = tk.Label(
             self.preview_container,
             bg=VIEWPORT_BG,
             fg=TEXT_MUTED,
-            text="Connecting live video stream...",
-            font=("Segoe UI", 11),
+            text="Connecting studio camera stream...",
+            font=("Segoe UI", 10),
         )
         self.preview.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
-        # Floating HUD Overlay (Top of Camera Viewport)
-        hud_overlay = tk.Frame(self.preview_container, bg="")
-        hud_overlay.place(relx=0.02, rely=0.03, relwidth=0.96)
+        # Floating Unobtrusive Status Badge (Top-Left of Viewport)
+        status_pill = tk.Frame(self.preview_container, bg="#ffffff", highlightthickness=1, highlightbackground=BORDER_LIGHT, padx=10, pady=4)
+        status_pill.place(relx=0.03, rely=0.03)
 
-        # Live Emerald Badge
-        live_pill = tk.Frame(hud_overlay, bg="#121319", highlightthickness=1, highlightbackground="#222430", padx=8, pady=3)
-        live_pill.pack(side=tk.LEFT)
-
-        dot_cv = tk.Canvas(live_pill, width=8, height=8, bg="#121319", highlightthickness=0)
+        dot_cv = tk.Canvas(status_pill, width=7, height=7, bg="#ffffff", highlightthickness=0)
         dot_cv.pack(side=tk.LEFT, padx=(0, 5))
-        dot_cv.create_oval(1, 1, 7, 7, fill=LIVE_EMERALD, outline="")
+        dot_cv.create_oval(1, 1, 6, 6, fill=LIVE_EMERALD, outline="")
 
-        tk.Label(
-            live_pill,
-            text="LIVE",
-            font=("Segoe UI Black", 8),
-            bg="#121319",
-            fg=LIVE_EMERALD,
-        ).pack(side=tk.LEFT)
+        tk.Label(status_pill, textvariable=self.tracking_badge_text, font=("Segoe UI Semibold", 8), bg="#ffffff", fg=TEXT_PRIMARY).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(status_pill, textvariable=self.fps_badge_text, font=("Segoe UI", 8), bg="#ffffff", fg=TEXT_MUTED).pack(side=tk.LEFT)
 
-        # Tracking and FPS Pill
-        tracking_pill = tk.Frame(hud_overlay, bg="#121319", highlightthickness=1, highlightbackground="#222430", padx=10, pady=3)
-        tracking_pill.pack(side=tk.LEFT, padx=(8, 0))
+        # Floating Bottom Action Toolbar Under Viewport
+        hud_bar = tk.Frame(viewport_wrapper, bg=BG)
+        hud_bar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
-        tk.Label(
-            tracking_pill,
-            textvariable=self.tracking_badge_text,
-            font=("Segoe UI", 8),
-            bg="#121319",
-            fg=TEXT_SECONDARY,
-        ).pack(side=tk.LEFT)
-
-        fps_pill = tk.Frame(hud_overlay, bg="#121319", highlightthickness=1, highlightbackground="#222430", padx=8, pady=3)
-        fps_pill.pack(side=tk.RIGHT)
-
-        tk.Label(
-            fps_pill,
-            textvariable=self.fps_badge_text,
-            font=("Segoe UI Semibold", 8),
-            bg="#121319",
-            fg=ACCENT,
-        ).pack(side=tk.RIGHT)
-
-        # Viewport Floating Bottom Toolbar
-        bottom_bar = tk.Frame(viewport_wrapper, bg=BG)
-        bottom_bar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-
-        # Compare Before & After Button (Interactive Hold / Click)
+        # Bare Face Compare Button (Interactive Press & Hold)
         self.btn_compare = tk.Button(
-            bottom_bar,
-            text="👁 Hold for Before / After",
+            hud_bar,
+            text="👁  Hold for Bare Face",
             font=("Segoe UI Semibold", 9),
-            bg=CARD_BG,
+            bg=SURFACE,
             fg=TEXT_PRIMARY,
-            activebackground=CARD_ACTIVE,
+            activebackground=BORDER_LIGHT,
             activeforeground=TEXT_PRIMARY,
             relief="flat",
             padx=12,
             pady=6,
             cursor="hand2",
             highlightthickness=1,
-            highlightbackground=CARD_BORDER,
+            highlightbackground=BORDER_LIGHT,
         )
         self.btn_compare.pack(side=tk.LEFT, padx=(0, 8))
         self.btn_compare.bind("<ButtonPress-1>", lambda _e: self._set_compare(True))
         self.btn_compare.bind("<ButtonRelease-1>", lambda _e: self._set_compare(False))
 
-        # Studio Lighting Toggle (Google Meet auto-light look)
+        # Auto-Lighting Toggle
         self.btn_light = tk.Button(
-            bottom_bar,
-            text="✦ Studio Light: ON",
+            hud_bar,
+            text="✦  Auto-Lighting: ON",
             font=("Segoe UI", 9),
-            bg="#1d202b",
-            fg=ACCENT_HOVER,
-            activebackground=CARD_ACTIVE,
+            bg=SURFACE,
+            fg=TEXT_PRIMARY,
+            activebackground=BORDER_LIGHT,
             relief="flat",
             padx=12,
             pady=6,
             cursor="hand2",
             highlightthickness=1,
-            highlightbackground=CARD_BORDER,
+            highlightbackground=BORDER_LIGHT,
             command=self._toggle_studio_light,
         )
         self.btn_light.pack(side=tk.LEFT, padx=(0, 8))
 
         # Mirror Camera Flip
-        self.btn_mirror = tk.Button(
-            bottom_bar,
-            text="⇄ Mirror Flip",
+        btn_mirror = tk.Button(
+            hud_bar,
+            text="⇄  Mirror Camera",
             font=("Segoe UI", 9),
-            bg=CARD_BG,
+            bg=SURFACE,
             fg=TEXT_SECONDARY,
-            activebackground=CARD_ACTIVE,
+            activebackground=BORDER_LIGHT,
             relief="flat",
             padx=10,
             pady=6,
             cursor="hand2",
             highlightthickness=1,
-            highlightbackground=CARD_BORDER,
+            highlightbackground=BORDER_LIGHT,
             command=self._toggle_mirror,
         )
-        self.btn_mirror.pack(side=tk.LEFT, padx=(0, 8))
+        btn_mirror.pack(side=tk.LEFT)
 
-        # Capture Snapshot Button (High-profile action)
-        btn_snap = tk.Button(
-            bottom_bar,
-            text="📸 Capture Look",
+        # Quick Snapshot Button
+        btn_quick_snap = tk.Button(
+            hud_bar,
+            text="📸  Quick Snap",
             font=("Segoe UI Semibold", 9),
+            bg=SURFACE,
+            fg=ACCENT,
+            activebackground=ACCENT_SOFT,
+            activeforeground=ACCENT,
+            relief="flat",
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=ACCENT_BORDER,
+            command=self.save_result,
+        )
+        btn_quick_snap.pack(side=tk.RIGHT)
+
+        # -------------------------------------------------------------------
+        # Right Side: Clean Commercial Beauty Studio (Matches Image 3)
+        # -------------------------------------------------------------------
+        sidebar = tk.Frame(workspace, bg=SURFACE, padx=22, pady=18, highlightthickness=1, highlightbackground=BORDER_LIGHT)
+        sidebar.grid(row=0, column=1, sticky="nsew")
+
+        # Section 1: "Beauty features" (Horizontal Pill Buttons, Matches Image 3)
+        tk.Label(
+            sidebar,
+            text="Beauty features",
+            font=("Segoe UI Semibold", 10),
+            bg=SURFACE,
+            fg=TEXT_PRIMARY,
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        features_box = tk.Frame(sidebar, bg=SURFACE)
+        features_box.pack(fill=tk.X, pady=(0, 16))
+
+        features = [
+            ("lipstick", "Lipstick"),
+            ("blush", "Blush"),
+            ("eyeshadow", "Eyeshadow"),
+            ("eyeliner", "Eyeliner"),
+            ("brow", "Eyebrows"),
+            ("foundation", "Foundation"),
+        ]
+
+        # 2 rows of 3 pills each for clean generous spacing
+        for i, (f_key, f_label) in enumerate(features):
+            is_active = f_key == self.active_feature
+            state = getattr(self.settings, f_key)
+            check_mark = "✓ " if state.enabled else ""
+
+            p_btn = tk.Button(
+                features_box,
+                text=f"{check_mark}{f_label}",
+                font=("Segoe UI Semibold", 8),
+                bg=DARK_PILL_BG if is_active else BG,
+                fg=DARK_PILL_FG if is_active else TEXT_SECONDARY,
+                activebackground=DARK_PILL_BG,
+                activeforeground=DARK_PILL_FG,
+                relief="flat",
+                padx=10,
+                pady=6,
+                cursor="hand2",
+                highlightthickness=1,
+                highlightbackground=DARK_PILL_BG if is_active else BORDER_LIGHT,
+                command=lambda k=f_key: self._select_feature(k),
+            )
+            p_btn.grid(row=i // 3, column=i % 3, padx=3, pady=3, sticky="ew")
+            features_box.columnconfigure(i % 3, weight=1)
+            self.feature_buttons[f_key] = p_btn
+
+        # Section 2: "Color" (Matches Image 3: None/Slash button ⊘ + Circle Swatches)
+        color_header_row = tk.Frame(sidebar, bg=SURFACE)
+        color_header_row.pack(fill=tk.X, pady=(4, 6))
+
+        tk.Label(
+            color_header_row,
+            text="Color",
+            font=("Segoe UI Semibold", 10),
+            bg=SURFACE,
+            fg=TEXT_PRIMARY,
+        ).pack(side=tk.LEFT)
+
+        self.shade_badge = tk.Label(
+            color_header_row,
+            textvariable=self.color_title_text,
+            font=("Segoe UI", 8),
+            bg=SURFACE,
+            fg=TEXT_MUTED,
+        )
+        self.shade_badge.pack(side=tk.RIGHT)
+
+        # Swatches Frame Container
+        self.swatch_container = tk.Frame(sidebar, bg=SURFACE)
+        self.swatch_container.pack(fill=tk.X, pady=(0, 14))
+
+        # Build initial swatches for Lipstick
+        self._rebuild_swatches()
+
+        # Section 3: "Finish options" (Horizontal Pill Selectors, Matches Image 3)
+        self.finish_header = tk.Label(
+            sidebar,
+            text="Finish options",
+            font=("Segoe UI Semibold", 10),
+            bg=SURFACE,
+            fg=TEXT_PRIMARY,
+        )
+        self.finish_header.pack(anchor=tk.W, pady=(4, 6))
+
+        self.finish_box = tk.Frame(sidebar, bg=SURFACE)
+        self.finish_box.pack(fill=tk.X, pady=(0, 14))
+        self._rebuild_finish_options()
+
+        # Section 4: "Coverage & Intensity" Slider (In the control panel, not on camera)
+        slider_frame = tk.Frame(sidebar, bg=SURFACE)
+        slider_frame.pack(fill=tk.X, pady=(0, 14))
+
+        slider_lbl_row = tk.Frame(slider_frame, bg=SURFACE)
+        slider_lbl_row.pack(fill=tk.X)
+
+        tk.Label(slider_lbl_row, text="Coverage & Intensity", font=("Segoe UI Semibold", 9), bg=SURFACE, fg=TEXT_PRIMARY).pack(side=tk.LEFT)
+        self.intensity_pct_label = tk.Label(slider_lbl_row, text="60%", font=("Segoe UI Semibold", 9), bg=SURFACE, fg=ACCENT)
+        self.intensity_pct_label.pack(side=tk.RIGHT)
+
+        self.inline_scale = tk.Scale(
+            slider_frame,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            bg=SURFACE,
+            fg=TEXT_SECONDARY,
+            highlightthickness=0,
+            troughcolor="#e2e8f0",
+            activebackground=ACCENT,
+            showvalue=False,
+            command=self._on_inline_slider_change,
+        )
+        self.inline_scale.set(60)
+        self.inline_scale.pack(fill=tk.X, pady=(3, 0))
+
+        # Section 5: "Camera Brightness" Slider (Solves the laptop camera underexposure)
+        bright_frame = tk.Frame(sidebar, bg=SURFACE)
+        bright_frame.pack(fill=tk.X, pady=(0, 16))
+
+        bright_lbl_row = tk.Frame(bright_frame, bg=SURFACE)
+        bright_lbl_row.pack(fill=tk.X)
+
+        tk.Label(bright_lbl_row, text="☀  Camera Exposure / Brightness", font=("Segoe UI Semibold", 9), bg=SURFACE, fg=TEXT_PRIMARY).pack(side=tk.LEFT)
+        self.bright_pct_label = tk.Label(bright_lbl_row, text="108%", font=("Segoe UI Semibold", 9), bg=SURFACE, fg=TEXT_SECONDARY)
+        self.bright_pct_label.pack(side=tk.RIGHT)
+
+        self.bright_scale = tk.Scale(
+            bright_frame,
+            from_=75,
+            to=145,
+            orient=tk.HORIZONTAL,
+            bg=SURFACE,
+            fg=TEXT_SECONDARY,
+            highlightthickness=0,
+            troughcolor="#e2e8f0",
+            activebackground=ACCENT,
+            showvalue=False,
+            command=self._on_brightness_slider_change,
+        )
+        self.bright_scale.set(108)
+        self.bright_scale.pack(fill=tk.X, pady=(3, 0))
+
+        # Section 6: Primary Action Button (Matches Image 3's Cherry Pill Button)
+        self.btn_primary_save = tk.Button(
+            sidebar,
+            text="📸  Save Look Snapshot",
+            font=("Segoe UI Semibold", 10),
             bg=ACCENT,
             fg="#ffffff",
             activebackground=ACCENT_HOVER,
             activeforeground="#ffffff",
             relief="flat",
-            padx=16,
-            pady=6,
+            padx=18,
+            pady=9,
             cursor="hand2",
             command=self.save_result,
         )
-        btn_snap.pack(side=tk.RIGHT)
+        self.btn_primary_save.pack(fill=tk.X, pady=(0, 16))
 
-        # Reset All Products
-        btn_reset = tk.Button(
-            bottom_bar,
-            text="↺ Reset",
-            font=("Segoe UI", 9),
-            bg=CARD_BG,
-            fg=TEXT_MUTED,
-            activebackground=CARD_ACTIVE,
-            activeforeground=TEXT_PRIMARY,
-            relief="flat",
-            padx=10,
-            pady=6,
-            cursor="hand2",
-            command=lambda: self._apply_preset("Bare Face"),
-        )
-        btn_reset.pack(side=tk.RIGHT, padx=(0, 8))
-
-        # -------------------------------------------------------------------
-        # Right Side: Professional Studio Sidebar
-        # -------------------------------------------------------------------
-        sidebar_frame = tk.Frame(
-            main_grid,
-            bg=SURFACE,
-            width=420,
-            highlightthickness=1,
-            highlightbackground=CARD_BORDER,
-        )
-        sidebar_frame.grid(row=0, column=1, sticky="nsew")
-        sidebar_frame.pack_propagate(False)
-
-        # 1. 1-Click Curated Look Presets Bar
-        preset_box = tk.Frame(sidebar_frame, bg=SURFACE)
-        preset_box.pack(fill=tk.X, padx=14, pady=(12, 6))
-
+        # Section 7: "Recommended looks" (1-Click Presets)
         tk.Label(
-            preset_box,
-            text="CURATED LOOKS",
-            font=("Segoe UI Semibold", 8),
+            sidebar,
+            text="Recommended looks",
+            font=("Segoe UI Semibold", 9),
             bg=SURFACE,
             fg=TEXT_MUTED,
-        ).pack(anchor=tk.W, pady=(0, 4))
+        ).pack(anchor=tk.W, pady=(0, 6))
 
-        preset_row = tk.Frame(preset_box, bg=SURFACE)
-        preset_row.pack(fill=tk.X)
+        preset_row = tk.Frame(sidebar, bg=SURFACE)
+        preset_row.pack(fill=tk.X, pady=(0, 8))
 
         for look_name in ["Natural Glow", "Red Carpet", "Berry Velvet", "Warm Sunset"]:
-            btn = tk.Button(
+            p_btn = tk.Button(
                 preset_row,
                 text=look_name,
                 font=("Segoe UI", 8),
-                bg=CARD_BG,
-                fg=TEXT_PRIMARY,
-                activebackground=ACCENT,
-                activeforeground="#ffffff",
+                bg=BG,
+                fg=TEXT_SECONDARY,
+                activebackground=ACCENT_SOFT,
+                activeforeground=ACCENT,
                 relief="flat",
                 padx=8,
-                pady=3,
+                pady=4,
                 cursor="hand2",
                 highlightthickness=1,
-                highlightbackground=CARD_BORDER,
+                highlightbackground=BORDER_LIGHT,
                 command=lambda ln=look_name: self._apply_preset(ln),
             )
-            btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+            p_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
 
-        # 2. Category Filter Tabs (All / Face / Eyes / Lips)
-        tab_box = tk.Frame(sidebar_frame, bg=SURFACE)
-        tab_box.pack(fill=tk.X, padx=14, pady=(6, 8))
-
-        self.tab_buttons: dict[str, tk.Button] = {}
-        for cat in ["All", "Face", "Eyes", "Lips"]:
-            t_btn = tk.Button(
-                tab_box,
-                text=cat,
-                font=("Segoe UI Semibold", 9),
-                bg=ACCENT if cat == "All" else CARD_BG,
-                fg="#ffffff" if cat == "All" else TEXT_SECONDARY,
-                activebackground=ACCENT,
-                activeforeground="#ffffff",
-                relief="flat",
-                padx=10,
-                pady=3,
-                cursor="hand2",
-                command=lambda c=cat: self._switch_category(c),
-            )
-            t_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
-            self.tab_buttons[cat] = t_btn
-
-        # 3. Scrollable Product Cards Canvas
-        canvas_container = tk.Frame(sidebar_frame, bg=SURFACE)
-        canvas_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 8))
-
-        self.canvas = tk.Canvas(canvas_container, bg=SURFACE, highlightthickness=0)
-        self.scrollbar = ttk.Scrollbar(canvas_container, orient=tk.VERTICAL, command=self.canvas.yview)
-        self.sidebar_inner = tk.Frame(self.canvas, bg=SURFACE)
-
-        self.sidebar_inner.bind(
-            "<Configure>",
-            lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
-        )
-        self.canvas_window = self.canvas.create_window((0, 0), window=self.sidebar_inner, anchor=tk.NW, width=382)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        def _on_mousewheel(event):
-            delta = int(-1 * (event.delta / 120)) if event.delta else 0
-            self.canvas.yview_scroll(delta, "units")
-
-        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-        # Build Product Cards
-        self._build_product_card("lipstick", "Lipstick", category="Lips", extra="lipstick")
-        self._build_product_card("blush", "Blush", category="Face")
-        self._build_product_card("eyeshadow", "Eyeshadow", category="Eyes")
-        self._build_product_card("eyeliner", "Eyeliner", category="Eyes", extra="eyeliner")
-        self._build_product_card("brow", "Eyebrows", category="Eyes")
-        self._build_product_card("foundation", "Foundation", category="Face")
-
-    def _build_product_card(self, key: str, title: str, category: str, extra: str | None = None) -> None:
-        state = getattr(self.settings, key)
-        is_on = state.enabled
-
-        card = tk.Frame(
-            self.sidebar_inner,
-            bg=CARD_ACTIVE if is_on else CARD_BG,
-            highlightthickness=1,
-            highlightbackground=CARD_BORDER_ON if is_on else CARD_BORDER,
-        )
-        card.pack(fill=tk.X, pady=4, padx=2)
-        self.card_frames[key] = card
-
-        # Top Header Row (Toggle, Title, Active Shade Badge)
-        top_row = tk.Frame(card, bg=card["bg"])
-        top_row.pack(fill=tk.X, padx=12, pady=(8, 4))
-
-        toggle_btn = tk.Button(
-            top_row,
-            text="ON" if is_on else "OFF",
-            font=("Segoe UI Black", 7),
-            bg=ACCENT if is_on else "#282a36",
-            fg="#ffffff" if is_on else TEXT_MUTED,
-            activebackground=ACCENT_HOVER,
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=7,
-            pady=2,
-            cursor="hand2",
-            command=lambda p=key: self._toggle_product(p),
-        )
-        toggle_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.toggle_buttons[key] = toggle_btn
-
-        title_lbl = tk.Label(
-            top_row,
-            text=title,
-            font=("Segoe UI Semibold", 10),
-            bg=card["bg"],
-            fg=TEXT_PRIMARY,
-        )
-        title_lbl.pack(side=tk.LEFT)
-
-        cur_idx = self.selected_swatch.get(key)
-        swatch_list = SWATCHES.get(key, [])
-        cur_name = swatch_list[cur_idx][0] if cur_idx is not None and cur_idx < len(swatch_list) else "Custom"
-
-        shade_lbl = tk.Label(
-            top_row,
-            text=f"● {cur_name}",
+        # Clear All Button
+        btn_reset_all = tk.Button(
+            sidebar,
+            text="↺  Clear All Makeup (Bare Face)",
             font=("Segoe UI", 8),
-            bg=card["bg"],
-            fg=ACCENT_HOVER if is_on else TEXT_MUTED,
-        )
-        shade_lbl.pack(side=tk.RIGHT)
-        self.shade_labels[key] = shade_lbl
-
-        # Extra Dropdown Options
-        if extra == "eyeliner":
-            opt_row = tk.Frame(card, bg=card["bg"])
-            opt_row.pack(fill=tk.X, padx=12, pady=(2, 4))
-            tk.Label(opt_row, text="Style:", font=("Segoe UI", 8), bg=card["bg"], fg=TEXT_MUTED).pack(side=tk.LEFT, padx=(0, 6))
-
-            style_map = {
-                "Classic Wing": "classic_wing",
-                "Tightline": "tightline",
-                "Bold Kohl": "bold",
-                "Cat Eye": "cat_eye",
-            }
-            inv_style_map = {v: k for k, v in style_map.items()}
-
-            style_var = tk.StringVar(value=inv_style_map.get(self.settings.eyeliner.style, "Classic Wing"))
-            style_combo = ttk.Combobox(
-                opt_row,
-                textvariable=style_var,
-                values=list(style_map.keys()),
-                state="readonly",
-                width=14,
-            )
-            style_combo.pack(side=tk.LEFT)
-
-            def _on_style_change(_e):
-                with self._settings_lock:
-                    self.settings.eyeliner.style = style_map.get(style_var.get(), "classic_wing")
-                self.status_text.set(f"Eyeliner Style: {style_var.get()}")
-
-            style_combo.bind("<<ComboboxSelected>>", _on_style_change)
-
-        elif extra == "lipstick":
-            opt_row = tk.Frame(card, bg=card["bg"])
-            opt_row.pack(fill=tk.X, padx=12, pady=(2, 4))
-            tk.Label(opt_row, text="Finish:", font=("Segoe UI", 8), bg=card["bg"], fg=TEXT_MUTED).pack(side=tk.LEFT, padx=(0, 6))
-
-            mode_map = {
-                "Velvet Matte": "multiply",
-                "Satin Cream": "overlay",
-                "Sheer Tint": "color",
-            }
-            inv_mode_map = {v: k for k, v in mode_map.items()}
-
-            mode_var = tk.StringVar(value=inv_mode_map.get(self.settings.lipstick.blend_mode, "Velvet Matte"))
-            mode_combo = ttk.Combobox(
-                opt_row,
-                textvariable=mode_var,
-                values=list(mode_map.keys()),
-                state="readonly",
-                width=13,
-            )
-            mode_combo.pack(side=tk.LEFT)
-
-            def _on_mode_change(_e):
-                with self._settings_lock:
-                    self.settings.lipstick.blend_mode = mode_map.get(mode_var.get(), "multiply")
-                self.status_text.set(f"Lipstick Finish: {mode_var.get()}")
-
-            mode_combo.bind("<<ComboboxSelected>>", _on_mode_change)
-
-        # Cosmetic Pearl Swatches Row
-        swatch_frame = tk.Frame(card, bg=card["bg"])
-        swatch_frame.pack(fill=tk.X, padx=12, pady=(4, 6))
-
-        self.swatch_canvases[key] = []
-        for i, (name, rgb) in enumerate(SWATCHES.get(key, [])):
-            c_hex = rgb_to_hex(rgb)
-            is_sel = i == self.selected_swatch.get(key)
-
-            btn_cv = tk.Canvas(swatch_frame, width=24, height=24, bg=card["bg"], highlightthickness=0, cursor="hand2")
-            btn_cv.grid(row=i // 7, column=i % 7, padx=3, pady=3)
-            self._draw_swatch_circle(btn_cv, c_hex, is_sel)
-
-            btn_cv.bind("<Button-1>", lambda _e, p=key, idx=i: self._select_swatch(p, idx))
-            btn_cv.bind("<Enter>", lambda _e, n=name, p=title: self.status_text.set(f"{p}: {n}"))
-            self.swatch_canvases[key].append(btn_cv)
-
-        # Custom Color Picker Row
-        custom_row = tk.Frame(card, bg=card["bg"])
-        custom_row.pack(fill=tk.X, padx=12, pady=(0, 4))
-
-        custom_chip = tk.Canvas(custom_row, width=16, height=16, bg=card["bg"], highlightthickness=0)
-        custom_chip.pack(side=tk.LEFT, padx=(0, 6))
-        self._draw_swatch_circle(custom_chip, rgb_to_hex(bgr_to_rgb(state.color_bgr)), selected=False)
-        self.custom_color_chips[key] = custom_chip
-
-        custom_btn = tk.Button(
-            custom_row,
-            text="Pick Custom Color...",
-            font=("Segoe UI", 8),
-            bg="#232532",
-            fg=TEXT_SECONDARY,
-            activebackground=CARD_BORDER,
-            activeforeground=TEXT_PRIMARY,
+            bg=SURFACE,
+            fg=TEXT_MUTED,
+            activebackground=BORDER_LIGHT,
             relief="flat",
             padx=8,
-            pady=2,
+            pady=4,
             cursor="hand2",
-            command=lambda p=key, t=title: self._choose_custom_color(p, t),
+            command=lambda: self._apply_preset("Bare Face"),
         )
-        custom_btn.pack(side=tk.LEFT)
+        btn_reset_all.pack(fill=tk.X)
 
-        # Intensity Slider Row
-        slider_row = tk.Frame(card, bg=card["bg"])
-        slider_row.pack(fill=tk.X, padx=12, pady=(4, 8))
+    # -----------------------------------------------------------------------
+    # Dynamic UI Sections (Beauty Features, Swatches, Finish Options)
+    # -----------------------------------------------------------------------
+    def _select_feature(self, feature_key: str) -> None:
+        self.active_feature = feature_key
 
-        slider_header = tk.Frame(slider_row, bg=card["bg"])
-        slider_header.pack(fill=tk.X)
+        # Update Beauty Features Pill Styles
+        for key, btn in self.feature_buttons.items():
+            is_active = key == feature_key
+            state = getattr(self.settings, key)
+            check_mark = "✓ " if state.enabled else ""
+            label_text = btn.cget("text").lstrip("✓ ")
+            btn.configure(
+                text=f"{check_mark}{label_text}",
+                bg=DARK_PILL_BG if is_active else BG,
+                fg=DARK_PILL_FG if is_active else TEXT_SECONDARY,
+                highlightbackground=DARK_PILL_BG if is_active else BORDER_LIGHT,
+            )
 
-        tk.Label(
-            slider_header,
-            text="Coverage & Strength",
+        # Update Swatches, Finish Options, and Intensity Slider for this feature
+        self._rebuild_swatches()
+        self._rebuild_finish_options()
+
+        state = getattr(self.settings, feature_key)
+        val = int(state.intensity * 100)
+        self.inline_scale.set(val)
+        self.intensity_pct_label.configure(text=f"{val}%")
+
+    def _rebuild_swatches(self) -> None:
+        for child in self.swatch_container.winfo_children():
+            child.destroy()
+
+        feature_key = self.active_feature
+        state = getattr(self.settings, feature_key)
+        swatches = SWATCHES.get(feature_key, [])
+        cur_idx = self.selected_swatch.get(feature_key)
+
+        cur_name = swatches[cur_idx][0] if cur_idx is not None and cur_idx < len(swatches) else ("Custom" if state.enabled else "None")
+        self.color_title_text.set(f"● {cur_name}")
+
+        # 1. First Swatch: None / Off Button (⊘, Matches Image 3)
+        none_cv = tk.Canvas(self.swatch_container, width=28, height=28, bg=SURFACE, highlightthickness=0, cursor="hand2")
+        none_cv.grid(row=0, column=0, padx=4, pady=3)
+        self._draw_none_swatch(none_cv, selected=(not state.enabled))
+        none_cv.bind("<Button-1>", lambda _e, p=feature_key: self._disable_feature(p))
+        none_cv.bind("<Enter>", lambda _e: self.status_text.set(f"{feature_key.title()}: Clear / None"))
+
+        # 2. Preset Swatches (Circular pans with double-ring selection)
+        self.swatch_canvases[feature_key] = []
+        for i, (name, rgb) in enumerate(swatches):
+            col_idx = i + 1
+            r_idx = col_idx // 7
+            c_idx = col_idx % 7
+
+            c_hex = rgb_to_hex(rgb)
+            is_sel = (i == cur_idx) and state.enabled
+
+            cv = tk.Canvas(self.swatch_container, width=28, height=28, bg=SURFACE, highlightthickness=0, cursor="hand2")
+            cv.grid(row=r_idx, column=c_idx, padx=4, pady=3)
+            self._draw_swatch_circle(cv, c_hex, is_sel)
+
+            cv.bind("<Button-1>", lambda _e, p=feature_key, idx=i: self._select_swatch(p, idx))
+            cv.bind("<Enter>", lambda _e, n=name: self.status_text.set(f"{feature_key.title()}: {n}"))
+            self.swatch_canvases[feature_key].append(cv)
+
+        # 3. Custom Color Picker Button
+        custom_idx = len(swatches) + 1
+        custom_btn = tk.Button(
+            self.swatch_container,
+            text="🎨 Custom...",
             font=("Segoe UI", 8),
-            bg=card["bg"],
-            fg=TEXT_MUTED,
-        ).pack(side=tk.LEFT)
-
-        pct_val = int(state.intensity * 100)
-        pct_lbl = tk.Label(
-            slider_header,
-            text=f"{pct_val}%",
-            font=("Segoe UI Semibold", 8),
-            bg=card["bg"],
+            bg=BG,
             fg=TEXT_SECONDARY,
+            activebackground=ACCENT_SOFT,
+            relief="flat",
+            padx=8,
+            pady=3,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=BORDER_LIGHT,
+            command=lambda p=feature_key: self._choose_custom_color(p),
         )
-        pct_lbl.pack(side=tk.RIGHT)
+        custom_btn.grid(row=(custom_idx // 7) + 1, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
-        scale = tk.Scale(
-            slider_row,
-            from_=0,
-            to=100,
-            orient=tk.HORIZONTAL,
-            bg=card["bg"],
-            fg=TEXT_SECONDARY,
-            highlightthickness=0,
-            troughcolor="#101117",
-            activebackground=ACCENT,
-            showvalue=False,
-            command=lambda val, p=key, l=pct_lbl: self._on_slider_change(p, val, l),
-        )
-        scale.set(pct_val)
-        scale.pack(fill=tk.X, pady=(2, 0))
+    def _rebuild_finish_options(self) -> None:
+        for child in self.finish_box.winfo_children():
+            child.destroy()
+
+        feature_key = self.active_feature
+        if feature_key == "lipstick":
+            self.finish_header.configure(text="Finish options")
+            options = [
+                ("Velvet Matte", "multiply"),
+                ("Satin Cream", "overlay"),
+                ("Sheer Tint", "color"),
+            ]
+            cur_mode = getattr(self.settings.lipstick, "blend_mode", "multiply")
+            for label, mode_key in options:
+                is_sel = cur_mode == mode_key
+                btn = tk.Button(
+                    self.finish_box,
+                    text=label,
+                    font=("Segoe UI", 8),
+                    bg=DARK_PILL_BG if is_sel else BG,
+                    fg=DARK_PILL_FG if is_sel else TEXT_SECONDARY,
+                    activebackground=DARK_PILL_BG,
+                    activeforeground=DARK_PILL_FG,
+                    relief="flat",
+                    padx=10,
+                    pady=4,
+                    cursor="hand2",
+                    highlightthickness=1,
+                    highlightbackground=DARK_PILL_BG if is_sel else BORDER_LIGHT,
+                    command=lambda m=mode_key: self._set_lipstick_finish(m),
+                )
+                btn.pack(side=tk.LEFT, padx=3)
+
+        elif feature_key == "eyeliner":
+            self.finish_header.configure(text="Style options")
+            options = [
+                ("Classic Wing", "classic_wing"),
+                ("Tightline", "tightline"),
+                ("Cat Eye", "cat_eye"),
+                ("Bold Kohl", "bold"),
+            ]
+            cur_style = getattr(self.settings.eyeliner, "style", "classic_wing")
+            for label, style_key in options:
+                is_sel = cur_style == style_key
+                btn = tk.Button(
+                    self.finish_box,
+                    text=label,
+                    font=("Segoe UI", 8),
+                    bg=DARK_PILL_BG if is_sel else BG,
+                    fg=DARK_PILL_FG if is_sel else TEXT_SECONDARY,
+                    activebackground=DARK_PILL_BG,
+                    activeforeground=DARK_PILL_FG,
+                    relief="flat",
+                    padx=9,
+                    pady=4,
+                    cursor="hand2",
+                    highlightthickness=1,
+                    highlightbackground=DARK_PILL_BG if is_sel else BORDER_LIGHT,
+                    command=lambda s=style_key: self._set_eyeliner_style(s),
+                )
+                btn.pack(side=tk.LEFT, padx=2)
+
+        else:
+            self.finish_header.configure(text="Application Mode")
+            lbl = tk.Label(self.finish_box, text="Natural Blend · Seamless Falloff", font=("Segoe UI", 8), bg=SURFACE, fg=TEXT_MUTED)
+            lbl.pack(side=tk.LEFT, padx=2)
 
     def _draw_swatch_circle(self, canvas: tk.Canvas, hex_color: str, selected: bool) -> None:
         canvas.delete("all")
-        w = int(canvas["width"])
-        h = int(canvas["height"])
+        w, h = int(canvas["width"]), int(canvas["height"])
         if selected:
-            canvas.create_oval(1, 1, w - 1, h - 1, outline="#ffffff", width=2)
-            canvas.create_oval(4, 4, w - 4, h - 4, fill=hex_color, outline="#101117", width=1)
+            # Elegant outer halo ring
+            canvas.create_oval(1, 1, w - 1, h - 1, outline=ACCENT, width=2)
+            # White separator ring
+            canvas.create_oval(3, 3, w - 3, h - 3, fill="#ffffff", outline="")
+            # Inner cosmetic color circle
+            canvas.create_oval(5, 5, w - 5, h - 5, fill=hex_color, outline=BORDER_LIGHT, width=1)
         else:
-            canvas.create_oval(2, 2, w - 2, h - 2, fill=hex_color, outline="#333646", width=1)
+            canvas.create_oval(3, 3, w - 3, h - 3, fill=hex_color, outline=BORDER_LIGHT, width=1)
 
-    def _toggle_product(self, product: str) -> None:
+    def _draw_none_swatch(self, canvas: tk.Canvas, selected: bool) -> None:
+        """Draws the clean circular 'None' button with diagonal slash (⊘, Image 3)."""
+        canvas.delete("all")
+        w, h = int(canvas["width"]), int(canvas["height"])
+        if selected:
+            canvas.create_oval(1, 1, w - 1, h - 1, outline=ACCENT, width=2)
+            canvas.create_oval(4, 4, w - 4, h - 4, fill="#ffffff", outline=TEXT_MUTED, width=1)
+            canvas.create_line(7, h - 8, w - 8, 7, fill=ACCENT, width=2)
+        else:
+            canvas.create_oval(3, 3, w - 3, h - 3, fill="#ffffff", outline=BORDER_LIGHT, width=1)
+            canvas.create_line(7, h - 8, w - 8, 7, fill=TEXT_MUTED, width=1)
+
+    # -----------------------------------------------------------------------
+    # Interactive Event Handlers
+    # -----------------------------------------------------------------------
+    def _disable_feature(self, product: str) -> None:
         with self._settings_lock:
-            state = getattr(self.settings, product)
-            state.enabled = not state.enabled
-            is_on = state.enabled
+            getattr(self.settings, product).enabled = False
 
-        self._update_card_visuals(product, is_on)
-        self.status_text.set(f"{product.title()}: {'Applied' if is_on else 'Removed'}")
-
-    def _update_card_visuals(self, product: str, is_on: bool) -> None:
-        card = self.card_frames.get(product)
-        if card:
-            card.configure(
-                bg=CARD_ACTIVE if is_on else CARD_BG,
-                highlightbackground=CARD_BORDER_ON if is_on else CARD_BORDER,
-            )
-            for child in card.winfo_children():
-                if isinstance(child, tk.Frame):
-                    child.configure(bg=card["bg"])
-                    for sub in child.winfo_children():
-                        if isinstance(sub, tk.Label):
-                            sub.configure(bg=card["bg"])
-                        elif isinstance(sub, tk.Canvas):
-                            sub.configure(bg=card["bg"])
-
-        btn = self.toggle_buttons.get(product)
-        if btn:
-            btn.configure(
-                text="ON" if is_on else "OFF",
-                bg=ACCENT if is_on else "#282a36",
-                fg="#ffffff" if is_on else TEXT_MUTED,
-            )
-
-        lbl = self.shade_labels.get(product)
-        if lbl:
-            lbl.configure(fg=ACCENT_HOVER if is_on else TEXT_MUTED)
+        self._update_feature_pill(product, False)
+        self._rebuild_swatches()
+        self.status_text.set(f"{product.title()}: Disabled")
 
     def _select_swatch(self, product: str, index: int) -> None:
         swatches = SWATCHES.get(product, [])
@@ -931,27 +904,15 @@ class MakeupTryOnApp:
             state.color_bgr = rgb_to_bgr(rgb)
             state.enabled = True
 
-        self._update_card_visuals(product, True)
-
-        for i, cv in enumerate(self.swatch_canvases.get(product, [])):
-            hex_c = rgb_to_hex(swatches[i][1])
-            self._draw_swatch_circle(cv, hex_c, selected=(i == index))
-
-        chip = self.custom_color_chips.get(product)
-        if chip:
-            self._draw_swatch_circle(chip, rgb_to_hex(rgb), selected=False)
-
-        lbl = self.shade_labels.get(product)
-        if lbl:
-            lbl.configure(text=f"● {name}")
-
+        self._update_feature_pill(product, True)
+        self._rebuild_swatches()
         self.status_text.set(f"{product.title()}: {name}")
 
-    def _choose_custom_color(self, product: str, title: str) -> None:
+    def _choose_custom_color(self, product: str) -> None:
         state = getattr(self.settings, product)
         cur_rgb = bgr_to_rgb(state.color_bgr)
         cur_hex = rgb_to_hex(cur_rgb)
-        color = colorchooser.askcolor(color=cur_hex, title=f"Choose {title} Shade")
+        color = colorchooser.askcolor(color=cur_hex, title=f"Choose {product.title()} Shade")
         if color and color[0]:
             rgb = (int(color[0][0]), int(color[0][1]), int(color[0][2]))
             with self._settings_lock:
@@ -959,52 +920,45 @@ class MakeupTryOnApp:
                 state.enabled = True
 
             self.selected_swatch[product] = None
-            self._update_card_visuals(product, True)
+            self._update_feature_pill(product, True)
+            self._rebuild_swatches()
+            self.color_title_text.set(f"● Custom {color[1]}")
+            self.status_text.set(f"{product.title()}: Custom Shade {color[1]}")
 
-            for i, cv in enumerate(self.swatch_canvases.get(product, [])):
-                hex_c = rgb_to_hex(SWATCHES[product][i][1])
-                self._draw_swatch_circle(cv, hex_c, selected=False)
-
-            hex_val = color[1]
-            chip = self.custom_color_chips.get(product)
-            if chip:
-                self._draw_swatch_circle(chip, hex_val, selected=True)
-
-            lbl = self.shade_labels.get(product)
-            if lbl:
-                lbl.configure(text=f"● Custom {hex_val}")
-
-            self.status_text.set(f"{title}: Custom {hex_val}")
-
-    def _on_slider_change(self, product: str, value: str, label: tk.Label) -> None:
-        val_int = int(float(value))
-        label.configure(text=f"{val_int}%")
+    def _set_lipstick_finish(self, mode: str) -> None:
         with self._settings_lock:
-            getattr(self.settings, product).intensity = val_int / 100.0
+            self.settings.lipstick.blend_mode = mode
+        self._rebuild_finish_options()
 
-    def _switch_category(self, category: str) -> None:
-        self.selected_category.set(category)
-        for cat, btn in self.tab_buttons.items():
-            if cat == category:
-                btn.configure(bg=ACCENT, fg="#ffffff")
-            else:
-                btn.configure(bg=CARD_BG, fg=TEXT_SECONDARY)
+    def _set_eyeliner_style(self, style: str) -> None:
+        with self._settings_lock:
+            self.settings.eyeliner.style = style
+        self._rebuild_finish_options()
 
-        product_categories = {
-            "foundation": "Face",
-            "blush": "Face",
-            "eyeshadow": "Eyes",
-            "eyeliner": "Eyes",
-            "brow": "Eyes",
-            "lipstick": "Lips",
-        }
+    def _on_inline_slider_change(self, value: str) -> None:
+        val_int = int(float(value))
+        self.intensity_pct_label.configure(text=f"{val_int}%")
+        with self._settings_lock:
+            getattr(self.settings, self.active_feature).intensity = val_int / 100.0
 
-        for prod, card in self.card_frames.items():
-            prod_cat = product_categories.get(prod)
-            if category == "All" or prod_cat == category:
-                card.pack(fill=tk.X, pady=4, padx=2)
-            else:
-                card.pack_forget()
+    def _on_brightness_slider_change(self, value: str) -> None:
+        val_int = int(float(value))
+        self.bright_pct_label.configure(text=f"{val_int}%")
+        with self._settings_lock:
+            self.camera_brightness_factor = val_int / 100.0
+
+    def _update_feature_pill(self, product: str, is_on: bool) -> None:
+        btn = self.feature_buttons.get(product)
+        if btn:
+            label_text = btn.cget("text").lstrip("✓ ")
+            check_mark = "✓ " if is_on else ""
+            is_active = product == self.active_feature
+            btn.configure(
+                text=f"{check_mark}{label_text}",
+                bg=DARK_PILL_BG if is_active else BG,
+                fg=DARK_PILL_FG if is_active else TEXT_SECONDARY,
+                highlightbackground=DARK_PILL_BG if is_active else BORDER_LIGHT,
+            )
 
     def _apply_preset(self, preset_name: str) -> None:
         preset = PRESET_LOOKS.get(preset_name)
@@ -1028,50 +982,35 @@ class MakeupTryOnApp:
                     state.blend_mode = cfg["blend_mode"]
 
         for prod in ["lipstick", "blush", "eyeshadow", "eyeliner", "brow", "foundation"]:
-            state = getattr(self.settings, prod)
-            self._update_card_visuals(prod, state.enabled)
-            cur_idx = self.selected_swatch.get(prod)
-            swatches = SWATCHES.get(prod, [])
-            for i, cv in enumerate(self.swatch_canvases.get(prod, [])):
-                hex_c = rgb_to_hex(swatches[i][1])
-                self._draw_swatch_circle(cv, hex_c, selected=(i == cur_idx))
-            cur_name = swatches[cur_idx][0] if cur_idx is not None and cur_idx < len(swatches) else "Custom"
-            lbl = self.shade_labels.get(prod)
-            if lbl:
-                lbl.configure(text=f"● {cur_name}")
+            self._update_feature_pill(prod, getattr(self.settings, prod).enabled)
 
+        self._select_feature(self.active_feature)
         self.status_text.set(f"Look Applied: {preset_name}")
 
     def _set_compare(self, compare_original: bool) -> None:
         with self._settings_lock:
             self.is_showing_original = compare_original
-        if compare_original:
-            self.btn_compare.configure(bg=ACCENT, fg="#ffffff")
-            self.status_text.set("Showing Original Face")
-        else:
-            self.btn_compare.configure(bg=CARD_BG, fg=TEXT_PRIMARY)
-            self.status_text.set("Showing Virtual Try-On Look")
+        self.status_text.set("Showing Bare Face" if compare_original else "Showing Try-On Look")
 
     def _toggle_studio_light(self) -> None:
         with self._settings_lock:
             self.is_studio_light_on = not self.is_studio_light_on
             val = self.is_studio_light_on
-        if val:
-            self.btn_light.configure(text="✦ Studio Light: ON", fg=ACCENT_HOVER, bg="#1d202b")
-            self.status_text.set("Studio Auto-Lighting Enabled")
-        else:
-            self.btn_light.configure(text="✧ Studio Light: OFF", fg=TEXT_MUTED, bg=CARD_BG)
-            self.status_text.set("Studio Auto-Lighting Disabled")
+        self.btn_light.configure(
+            text="✦  Auto-Lighting: ON" if val else "✧  Auto-Lighting: OFF",
+            fg=TEXT_PRIMARY if val else TEXT_MUTED,
+        )
+        self.status_text.set("Studio Auto-Lighting: " + ("ON" if val else "OFF"))
 
     def _toggle_mirror(self) -> None:
         with self._settings_lock:
             self.is_mirrored = not self.is_mirrored
 
     def start_camera(self) -> None:
-        self.status_text.set("Opening webcam stream...")
+        self.status_text.set("Opening camera stream...")
         ok = self.camera.start()
         if not ok:
-            self.status_text.set("Camera not found · Connect camera to begin")
+            self.status_text.set("Camera not detected · Connect camera to begin")
         else:
             self.status_text.set("Camera active · Live Try-On Ready")
 
@@ -1109,19 +1048,20 @@ class MakeupTryOnApp:
             with self._settings_lock:
                 mirror_active = self.is_mirrored
                 light_active = self.is_studio_light_on
+                user_brightness = self.camera_brightness_factor
                 compare_active = self.is_showing_original
                 settings_copy = copy.deepcopy(self.settings)
 
             if mirror_active:
                 raw_frame = cv2.flip(raw_frame, 1)
 
-            # Apply Studio Auto-Lighting if enabled (Google Meet look)
-            if light_active:
-                work_frame = enhance_studio_lighting(raw_frame)
+            # Apply adaptive camera brightness and tone calibration to match Windows Camera App
+            if light_active or user_brightness != 1.0:
+                work_frame = apply_camera_tone_and_brightness(raw_frame, user_brightness, light_active)
             else:
                 work_frame = raw_frame
 
-            # Detect face and apply virtual makeup
+            # Detect face and apply virtual makeup (clean full frame, no split line or slider on face)
             if compare_active:
                 processed = work_frame
                 has_face = False
@@ -1159,14 +1099,13 @@ class MakeupTryOnApp:
             fps = self._pipeline_fps
 
         if frame is not None:
-            # Update HUD badges
             self.fps_badge_text.set(f"{fps:.0f} FPS · HD 720p")
             if has_face:
-                self.tracking_badge_text.set("● Face Locked · Real-Time")
+                self.tracking_badge_text.set("● Face Tracking Active")
             else:
                 self.tracking_badge_text.set("○ Searching for face...")
 
-            # Fast SIMD resize in OpenCV directly (6x faster than Pillow resize)
+            # Fast SIMD resize in OpenCV directly
             box_w = max(self.preview_container.winfo_width() - 4, 320)
             box_h = max(self.preview_container.winfo_height() - 4, 240)
             img_h, img_w = frame.shape[:2]
