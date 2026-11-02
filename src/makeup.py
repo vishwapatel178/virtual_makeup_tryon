@@ -91,7 +91,7 @@ class MakeupSettings:
 
 
 def apply_makeup(image: np.ndarray, landmarks, settings: MakeupSettings) -> np.ndarray:
-    """Apply enabled makeup products in proper aesthetic layering sequence."""
+    """Apply enabled makeup products in proper aesthetic layering sequence with high-speed ROI processing."""
     if not landmarks:
         return image
 
@@ -104,35 +104,41 @@ def apply_makeup(image: np.ndarray, landmarks, settings: MakeupSettings) -> np.n
     # -----------------------------------------------------------------------
     if settings.foundation.enabled and settings.foundation.intensity > 0:
         fnd_mask = create_foundation_mask(image.shape, landmarks, face_w)
-        blurred_skin = cv2.bilateralFilter(result, d=7, sigmaColor=35, sigmaSpace=35)
-        alpha_fnd = (fnd_mask.astype(np.float32) / 255.0) * (settings.foundation.intensity * 0.38)
-        alpha_fnd_3 = cv2.merge([alpha_fnd, alpha_fnd, alpha_fnd])
-        smoothed_base = result.astype(np.float32) * (1.0 - alpha_fnd_3) + blurred_skin.astype(np.float32) * alpha_fnd_3
-        result = np.clip(smoothed_base, 0, 255).astype(np.uint8)
+        nz = cv2.findNonZero(fnd_mask)
+        if nz is not None:
+            fx, fy, fw, fh = cv2.boundingRect(nz)
+            roi_img = result[fy : fy + fh, fx : fx + fw]
+            roi_mask = fnd_mask[fy : fy + fh, fx : fx + fw]
+            blurred_skin = cv2.bilateralFilter(roi_img, d=7, sigmaColor=35, sigmaSpace=35)
+            alpha_fnd = (roi_mask.astype(np.float32) * (settings.foundation.intensity * 0.38 / 255.0))[:, :, np.newaxis]
+            smoothed_base = roi_img.astype(np.float32) * (1.0 - alpha_fnd) + blurred_skin.astype(np.float32) * alpha_fnd
+            result[fy : fy + fh, fx : fx + fw] = np.clip(smoothed_base, 0, 255).astype(np.uint8)
 
-        result = apply_color(
-            result,
-            fnd_mask,
-            settings.foundation.color_bgr,
-            settings.foundation.intensity * 0.32,
-            mode="soft_light",
-        )
+            result = apply_color(
+                result,
+                fnd_mask,
+                settings.foundation.color_bgr,
+                settings.foundation.intensity * 0.32,
+                mode="soft_light",
+            )
 
     # -----------------------------------------------------------------------
     # 2. Blush (Naturally Diffused & Softly Blended into Cheek Skin)
     # -----------------------------------------------------------------------
     if settings.blush.enabled and settings.blush.intensity > 0:
         axes = (max(12, int(face_w * 0.15)), max(9, int(face_w * 0.11)))
+        blush_mask = np.zeros((h, w), dtype=np.uint8)
         for indices in (LEFT_CHEEK_INDICES, RIGHT_CHEEK_INDICES):
             points = get_region_points(landmarks, indices)
             mask = create_ellipse_mask(image.shape, points, axes)
-            result = apply_color(
-                result,
-                mask,
-                settings.blush.color_bgr,
-                settings.blush.intensity * 0.50,
-                mode="soft_light",  # Diffused soft wash
-            )
+            cv2.bitwise_or(blush_mask, mask, blush_mask)
+        result = apply_color(
+            result,
+            blush_mask,
+            settings.blush.color_bgr,
+            settings.blush.intensity * 0.50,
+            mode="soft_light",  # Diffused soft wash
+        )
 
     # -----------------------------------------------------------------------
     # 3. Eyeshadow (Full Lid up to Crease with soft gradient)
@@ -142,20 +148,24 @@ def apply_makeup(image: np.ndarray, landmarks, settings: MakeupSettings) -> np.n
             (LEFT_UPPER_LID_INDICES, LEFT_EYE_CREASE_INDICES, LEFT_BROW_INDICES, LEFT_EYE_INDICES),
             (RIGHT_UPPER_LID_INDICES, RIGHT_EYE_CREASE_INDICES, RIGHT_BROW_INDICES, RIGHT_EYE_INDICES),
         )
+        shadow_mask = np.zeros((h, w), dtype=np.uint8)
+        blur_k = max(9, face_w // 26)
         for lid_idx, crease_idx, brow_idx, eye_idx in pairs:
             lid = get_region_points(landmarks, lid_idx)
             crease = get_region_points(landmarks, crease_idx)
             brow = get_region_points(landmarks, brow_idx)
             eye = get_region_points(landmarks, eye_idx)
             mask = create_eyeshadow_mask(image.shape, lid, crease, brow, eye)
-            mask = soften_mask(mask, max(9, face_w // 26))
-            result = apply_color(
-                result,
-                mask,
-                settings.eyeshadow.color_bgr,
-                settings.eyeshadow.intensity * 0.50,
-                mode="overlay",
-            )
+            mask = soften_mask(mask, blur_k)
+            cv2.bitwise_or(shadow_mask, mask, shadow_mask)
+
+        result = apply_color(
+            result,
+            shadow_mask,
+            settings.eyeshadow.color_bgr,
+            settings.eyeshadow.intensity * 0.50,
+            mode="overlay",
+        )
 
     # -----------------------------------------------------------------------
     # 4. Eyeliner (Smooth, Evenly Blended Lash Line: wing, tightline, bold, cat-eye)
