@@ -253,8 +253,13 @@ class MakeupTryOnApp:
         # UI String/Control Variables
         self.status_text = tk.StringVar(value="Camera active · Live Try-On Ready")
         self.fps_badge_text = tk.StringVar(value="-- FPS")
-        self.tracking_badge_text = tk.StringVar(value="● Face Tracking Active")
+        self.tracking_badge_text = tk.StringVar(value="")
         self.color_title_text = tk.StringVar(value="Color · Classic Red")
+
+        # Recommended Looks viewing state
+        self.is_viewing_recommended_looks = True
+        self.active_preset: str | None = "Natural Glow"
+        self.preset_buttons: dict[str, tk.Button] = {}
 
         # Color Swatches Tracking
         self.swatch_canvases: dict[str, list[tk.Canvas]] = {}
@@ -312,6 +317,9 @@ class MakeupTryOnApp:
         self._build_style()
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # Apply default Recommended Look (hides tracking indicator when viewing recommended looks)
+        self._apply_preset("Natural Glow")
 
         # Start Camera and Worker Thread
         self.start_camera()
@@ -403,23 +411,28 @@ class MakeupTryOnApp:
         self.preview.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
         # Floating Unobtrusive Status Badge (Top-Left of Viewport)
-        status_pill = tk.Frame(self.preview_container, bg="#ffffff", highlightthickness=1, highlightbackground=BORDER_LIGHT, padx=10, pady=4)
-        status_pill.place(relx=0.03, rely=0.03)
+        self.status_pill = tk.Frame(self.preview_container, bg="#ffffff", highlightthickness=1, highlightbackground=BORDER_LIGHT, padx=10, pady=4)
+        self.status_pill.place(relx=0.03, rely=0.03)
 
-        dot_cv = tk.Canvas(status_pill, width=7, height=7, bg="#ffffff", highlightthickness=0)
-        dot_cv.pack(side=tk.LEFT, padx=(0, 5))
-        dot_cv.create_oval(1, 1, 6, 6, fill=LIVE_EMERALD, outline="")
+        self.dot_cv = tk.Canvas(self.status_pill, width=7, height=7, bg="#ffffff", highlightthickness=0)
+        self.dot_cv.pack(side=tk.LEFT, padx=(0, 5))
+        self.dot_cv.create_oval(1, 1, 6, 6, fill=LIVE_EMERALD, outline="")
 
-        tk.Label(status_pill, textvariable=self.tracking_badge_text, font=("Segoe UI Semibold", 8), bg="#ffffff", fg=TEXT_PRIMARY).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Label(status_pill, textvariable=self.fps_badge_text, font=("Segoe UI", 8), bg="#ffffff", fg=TEXT_MUTED).pack(side=tk.LEFT)
+        self.tracking_lbl = tk.Label(self.status_pill, textvariable=self.tracking_badge_text, font=("Segoe UI Semibold", 8), bg="#ffffff", fg=TEXT_PRIMARY)
+        self.tracking_lbl.pack(side=tk.LEFT, padx=(0, 6))
+        self.fps_lbl = tk.Label(self.status_pill, textvariable=self.fps_badge_text, font=("Segoe UI", 8), bg="#ffffff", fg=TEXT_MUTED)
+        self.fps_lbl.pack(side=tk.LEFT)
 
-        # Floating Bottom Action Toolbar Under Viewport
+        # Floating Bottom Action Toolbar Under Viewport (Balanced & Aligned)
         hud_bar = tk.Frame(viewport_wrapper, bg=BG)
-        hud_bar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        hud_bar.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+
+        hud_inner = tk.Frame(hud_bar, bg=BG)
+        hud_inner.pack(anchor=tk.CENTER)
 
         # Bare Face Compare Button (Interactive Press & Hold)
         self.btn_compare = tk.Button(
-            hud_bar,
+            hud_inner,
             text="👁  Hold for Bare Face",
             font=("Segoe UI Semibold", 9),
             bg=SURFACE,
@@ -427,70 +440,51 @@ class MakeupTryOnApp:
             activebackground=BORDER_LIGHT,
             activeforeground=TEXT_PRIMARY,
             relief="flat",
-            padx=12,
-            pady=6,
+            padx=14,
+            pady=7,
             cursor="hand2",
             highlightthickness=1,
             highlightbackground=BORDER_LIGHT,
         )
-        self.btn_compare.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_compare.pack(side=tk.LEFT, padx=6)
         self.btn_compare.bind("<ButtonPress-1>", lambda _e: self._set_compare(True))
         self.btn_compare.bind("<ButtonRelease-1>", lambda _e: self._set_compare(False))
 
         # Auto-Lighting Toggle
         self.btn_light = tk.Button(
-            hud_bar,
+            hud_inner,
             text="✦  Auto-Lighting: ON",
             font=("Segoe UI", 9),
             bg=SURFACE,
             fg=TEXT_PRIMARY,
             activebackground=BORDER_LIGHT,
             relief="flat",
-            padx=12,
-            pady=6,
+            padx=14,
+            pady=7,
             cursor="hand2",
             highlightthickness=1,
             highlightbackground=BORDER_LIGHT,
             command=self._toggle_studio_light,
         )
-        self.btn_light.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_light.pack(side=tk.LEFT, padx=6)
 
         # Mirror Camera Flip
         btn_mirror = tk.Button(
-            hud_bar,
+            hud_inner,
             text="⇄  Mirror Camera",
             font=("Segoe UI", 9),
             bg=SURFACE,
             fg=TEXT_SECONDARY,
             activebackground=BORDER_LIGHT,
             relief="flat",
-            padx=10,
-            pady=6,
+            padx=14,
+            pady=7,
             cursor="hand2",
             highlightthickness=1,
             highlightbackground=BORDER_LIGHT,
             command=self._toggle_mirror,
         )
-        btn_mirror.pack(side=tk.LEFT)
-
-        # Quick Snapshot Button
-        btn_quick_snap = tk.Button(
-            hud_bar,
-            text="📸  Quick Snap",
-            font=("Segoe UI Semibold", 9),
-            bg=SURFACE,
-            fg=ACCENT,
-            activebackground=ACCENT_SOFT,
-            activeforeground=ACCENT,
-            relief="flat",
-            padx=12,
-            pady=6,
-            cursor="hand2",
-            highlightthickness=1,
-            highlightbackground=ACCENT_BORDER,
-            command=self.save_result,
-        )
-        btn_quick_snap.pack(side=tk.RIGHT)
+        btn_mirror.pack(side=tk.LEFT, padx=6)
 
         # -------------------------------------------------------------------
         # Right Side: Clean Commercial Beauty Studio (Matches Image 3)
@@ -658,10 +652,10 @@ class MakeupTryOnApp:
         )
         self.btn_primary_save.pack(fill=tk.X, pady=(0, 16))
 
-        # Section 7: "Recommended looks" (1-Click Presets)
+        # Section 7: "Recommended Looks" (1-Click Presets)
         tk.Label(
             sidebar,
-            text="Recommended looks",
+            text="Recommended Looks",
             font=("Segoe UI Semibold", 9),
             bg=SURFACE,
             fg=TEXT_MUTED,
@@ -670,6 +664,7 @@ class MakeupTryOnApp:
         preset_row = tk.Frame(sidebar, bg=SURFACE)
         preset_row.pack(fill=tk.X, pady=(0, 8))
 
+        self.preset_buttons = {}
         for look_name in ["Natural Glow", "Red Carpet", "Berry Velvet", "Warm Sunset"]:
             p_btn = tk.Button(
                 preset_row,
@@ -688,28 +683,42 @@ class MakeupTryOnApp:
                 command=lambda ln=look_name: self._apply_preset(ln),
             )
             p_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+            self.preset_buttons[look_name] = p_btn
 
-        # Clear All Button
-        btn_reset_all = tk.Button(
+        # Clear All Button (Subtly highlighted with refined rose accent border & semibold styling)
+        self.btn_reset_all = tk.Button(
             sidebar,
             text="↺  Clear All Makeup (Bare Face)",
-            font=("Segoe UI", 8),
-            bg=SURFACE,
-            fg=TEXT_MUTED,
-            activebackground=BORDER_LIGHT,
+            font=("Segoe UI Semibold", 8),
+            bg=SURFACE_CARD,
+            fg=ACCENT,
+            activebackground=ACCENT_SOFT,
+            activeforeground=ACCENT_HOVER,
             relief="flat",
-            padx=8,
-            pady=4,
+            padx=10,
+            pady=6,
             cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=ACCENT_BORDER,
             command=lambda: self._apply_preset("Bare Face"),
         )
-        btn_reset_all.pack(fill=tk.X)
+        self.btn_reset_all.pack(fill=tk.X, pady=(2, 0))
+        self.btn_reset_all.bind("<Enter>", lambda _e: self.btn_reset_all.configure(bg=ACCENT_SOFT, highlightbackground=ACCENT))
+        self.btn_reset_all.bind("<Leave>", lambda _e: self.btn_reset_all.configure(bg=SURFACE_CARD, highlightbackground=ACCENT_BORDER))
 
     # -----------------------------------------------------------------------
     # Dynamic UI Sections (Beauty Features, Swatches, Finish Options)
     # -----------------------------------------------------------------------
-    def _select_feature(self, feature_key: str) -> None:
+    def _select_feature(self, feature_key: str, from_preset: bool = False) -> None:
         self.active_feature = feature_key
+
+        if not from_preset:
+            self.is_viewing_recommended_looks = False
+            self.active_preset = None
+            if hasattr(self, "preset_buttons"):
+                for btn in self.preset_buttons.values():
+                    btn.configure(bg=BG, fg=TEXT_SECONDARY, highlightbackground=BORDER_LIGHT)
+            self._update_tracking_indicator_visibility()
 
         # Update Beauty Features Pill Styles
         for key, btn in self.feature_buttons.items():
@@ -965,6 +974,28 @@ class MakeupTryOnApp:
         if not preset:
             return
 
+        is_bare = (preset_name == "Bare Face")
+        self.is_viewing_recommended_looks = not is_bare
+        self.active_preset = preset_name if not is_bare else None
+
+        # Update Recommended Looks preset pill styles
+        if hasattr(self, "preset_buttons"):
+            for name, btn in self.preset_buttons.items():
+                if name == preset_name:
+                    btn.configure(
+                        bg=DARK_PILL_BG,
+                        fg=DARK_PILL_FG,
+                        highlightbackground=DARK_PILL_BG,
+                    )
+                else:
+                    btn.configure(
+                        bg=BG,
+                        fg=TEXT_SECONDARY,
+                        highlightbackground=BORDER_LIGHT,
+                    )
+
+        self._update_tracking_indicator_visibility()
+
         with self._settings_lock:
             for prod, cfg in preset.items():
                 state = getattr(self.settings, prod)
@@ -984,8 +1015,24 @@ class MakeupTryOnApp:
         for prod in ["lipstick", "blush", "eyeshadow", "eyeliner", "brow", "foundation"]:
             self._update_feature_pill(prod, getattr(self.settings, prod).enabled)
 
-        self._select_feature(self.active_feature)
+        self._select_feature(self.active_feature, from_preset=True)
         self.status_text.set(f"Look Applied: {preset_name}")
+
+    def _update_tracking_indicator_visibility(self) -> None:
+        """Hides the on-screen face tracking active indicator when viewing recommended looks."""
+        if not hasattr(self, "dot_cv") or not hasattr(self, "tracking_lbl"):
+            return
+        if self.is_viewing_recommended_looks:
+            if self.dot_cv.winfo_manager():
+                self.dot_cv.pack_forget()
+            if self.tracking_lbl.winfo_manager():
+                self.tracking_lbl.pack_forget()
+            self.tracking_badge_text.set("")
+        else:
+            if not self.dot_cv.winfo_manager():
+                self.dot_cv.pack(side=tk.LEFT, padx=(0, 5), before=self.fps_lbl)
+            if not self.tracking_lbl.winfo_manager():
+                self.tracking_lbl.pack(side=tk.LEFT, padx=(0, 6), before=self.fps_lbl)
 
     def _set_compare(self, compare_original: bool) -> None:
         with self._settings_lock:
@@ -1100,10 +1147,13 @@ class MakeupTryOnApp:
 
         if frame is not None:
             self.fps_badge_text.set(f"{fps:.0f} FPS · HD 720p")
-            if has_face:
-                self.tracking_badge_text.set("● Face Tracking Active")
+            if not self.is_viewing_recommended_looks:
+                if has_face:
+                    self.tracking_badge_text.set("● Face Tracking Active")
+                else:
+                    self.tracking_badge_text.set("○ Searching for face...")
             else:
-                self.tracking_badge_text.set("○ Searching for face...")
+                self.tracking_badge_text.set("")
 
             # Fast SIMD resize in OpenCV directly
             box_w = max(self.preview_container.winfo_width() - 4, 320)
