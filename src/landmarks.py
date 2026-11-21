@@ -98,6 +98,18 @@ NOSE_HIGHLIGHT = [168, 6, 197, 195, 5, 4, 1]
 BROW_BONE_LEFT = [105, 66, 107]
 BROW_BONE_RIGHT = [334, 296, 336]
 
+# ---------------------------------------------------------------------------
+# Concealer & Contour Indices
+# ---------------------------------------------------------------------------
+
+# Under-eye tear trough & dark circle zone
+LEFT_CONCEALER_INDICES = [33, 7, 163, 144, 145, 153, 154, 155, 133, 112, 26, 22, 23, 24, 110, 25]
+RIGHT_CONCEALER_INDICES = [362, 382, 381, 380, 374, 373, 390, 249, 263, 463, 341, 256, 252, 253, 254, 339, 255]
+
+# Cheek hollow sculpting contours below zygomatic arch
+LEFT_CONTOUR_INDICES = [234, 93, 132, 58, 172, 138, 215, 187, 147, 123]
+RIGHT_CONTOUR_INDICES = [454, 323, 361, 288, 397, 367, 435, 411, 376, 352]
+
 # Face width references
 FACE_LEFT_IDX = 234
 FACE_RIGHT_IDX = 454

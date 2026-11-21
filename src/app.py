@@ -1,16 +1,3 @@
-"""Virtual Makeup Studio — Professional Real-Time Virtual Try-On Desktop Application.
-
-Redesigned following commercial luxury beauty tech aesthetic (Image 3):
-- Clear visual hierarchy, generous spacing, restrained use of color, and uncluttered layout.
-- Media Foundation (CAP_MSMF) priority without forced manual exposure flags, plus
-  adaptive exposure normalization and an interactive Brightness slider so the feed
-  matches the native Windows Camera App perfectly.
-- Clean, unobstructed camera viewport (no split-lines or overlaid sliders on the face).
-- Beauty features pill buttons, circular cosmetic pans with 'None' (⊘) toggle,
-  finish options, coverage slider, camera brightness control, and high-quality UI icons.
-- Decoupled multi-threaded 30+ FPS capture and 60 FPS responsive UI pipeline.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -99,7 +86,9 @@ def apply_camera_tone_and_brightness(frame: np.ndarray, user_brightness: float =
 PRESET_LOOKS: dict[str, dict] = {
     "Natural Glow": {
         "foundation": {"enabled": True, "swatch": 1, "intensity": 0.22},
-        "blush": {"enabled": True, "swatch": 0, "intensity": 0.28},
+        "concealer": {"enabled": True, "swatch": 1, "intensity": 0.28},
+        "contour": {"enabled": True, "swatch": 0, "intensity": 0.22},
+        "blush": {"enabled": True, "swatch": 0, "intensity": 0.33},
         "eyeshadow": {"enabled": True, "swatch": 0, "intensity": 0.25},
         "eyeliner": {"enabled": False, "swatch": 0, "intensity": 0.50},
         "brow": {"enabled": True, "swatch": 0, "intensity": 0.20},
@@ -107,7 +96,9 @@ PRESET_LOOKS: dict[str, dict] = {
     },
     "Red Carpet": {
         "foundation": {"enabled": True, "swatch": 1, "intensity": 0.35},
-        "blush": {"enabled": True, "swatch": 1, "intensity": 0.35},
+        "concealer": {"enabled": True, "swatch": 1, "intensity": 0.35},
+        "contour": {"enabled": True, "swatch": 1, "intensity": 0.36},
+        "blush": {"enabled": True, "swatch": 1, "intensity": 0.40},
         "eyeshadow": {"enabled": True, "swatch": 2, "intensity": 0.40},
         "eyeliner": {"enabled": True, "swatch": 0, "intensity": 0.85, "style": "classic_wing"},
         "brow": {"enabled": True, "swatch": 0, "intensity": 0.30},
@@ -115,7 +106,9 @@ PRESET_LOOKS: dict[str, dict] = {
     },
     "Berry Velvet": {
         "foundation": {"enabled": True, "swatch": 2, "intensity": 0.28},
-        "blush": {"enabled": True, "swatch": 2, "intensity": 0.32},
+        "concealer": {"enabled": True, "swatch": 2, "intensity": 0.30},
+        "contour": {"enabled": True, "swatch": 2, "intensity": 0.32},
+        "blush": {"enabled": True, "swatch": 2, "intensity": 0.36},
         "eyeshadow": {"enabled": True, "swatch": 4, "intensity": 0.38},
         "eyeliner": {"enabled": True, "swatch": 0, "intensity": 0.75, "style": "tightline"},
         "brow": {"enabled": True, "swatch": 1, "intensity": 0.25},
@@ -123,7 +116,9 @@ PRESET_LOOKS: dict[str, dict] = {
     },
     "Warm Sunset": {
         "foundation": {"enabled": False, "swatch": 1, "intensity": 0.25},
-        "blush": {"enabled": True, "swatch": 3, "intensity": 0.38},
+        "concealer": {"enabled": False, "swatch": 1, "intensity": 0.25},
+        "contour": {"enabled": True, "swatch": 1, "intensity": 0.35},
+        "blush": {"enabled": True, "swatch": 3, "intensity": 0.42},
         "eyeshadow": {"enabled": True, "swatch": 2, "intensity": 0.35},
         "eyeliner": {"enabled": True, "swatch": 1, "intensity": 0.70, "style": "classic_wing"},
         "brow": {"enabled": True, "swatch": 0, "intensity": 0.22},
@@ -131,6 +126,8 @@ PRESET_LOOKS: dict[str, dict] = {
     },
     "Bare Face": {
         "foundation": {"enabled": False},
+        "concealer": {"enabled": False},
+        "contour": {"enabled": False},
         "blush": {"enabled": False},
         "eyeshadow": {"enabled": False},
         "eyeliner": {"enabled": False},
@@ -223,7 +220,7 @@ class CameraStream:
 class MakeupTryOnApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("Virtual Makeup Try-On")
+        self.root.title("Virtual Makeup Studio")
         self.root.configure(bg=BG)
         self.root.minsize(1160, 740)
         self.root.geometry("1340x820")
@@ -231,7 +228,14 @@ class MakeupTryOnApp:
         # Capture and Threading State
         self.camera = CameraStream(src=0)
         self.detector = FaceDetector(video=True)
+        self.still_detector = FaceDetector(video=False)
         self._running = True
+
+        # Mode State ("camera" or "photo")
+        self.source_mode = "camera"
+        self.uploaded_image_raw: np.ndarray | None = None
+        self.uploaded_landmarks = None
+        self.uploaded_filename: str = ""
 
         # Thread-safe state primitives (Python-level, no Tk calls from worker)
         self._settings_lock = threading.Lock()
@@ -268,6 +272,8 @@ class MakeupTryOnApp:
         self.finish_buttons: dict[str, dict[str, tk.Button]] = {}
         self.selected_swatch: dict[str, int | None] = {
             "foundation": 1,
+            "concealer": 1,
+            "contour": 1,
             "blush": 1,
             "eyeshadow": 0,
             "eyeliner": 0,
@@ -282,10 +288,20 @@ class MakeupTryOnApp:
                 color_bgr=rgb_to_bgr(SWATCHES["foundation"][1][1]),
                 intensity=0.25,
             ),
+            concealer=ProductState(
+                enabled=False,
+                color_bgr=rgb_to_bgr(SWATCHES["concealer"][1][1]),
+                intensity=0.35,
+            ),
+            contour=ProductState(
+                enabled=False,
+                color_bgr=rgb_to_bgr(SWATCHES["contour"][1][1]),
+                intensity=0.30,
+            ),
             blush=ProductState(
                 enabled=True,
                 color_bgr=rgb_to_bgr(SWATCHES["blush"][1][1]),
-                intensity=0.28,
+                intensity=0.33,  # Enhanced by 15-20% for natural visibility
             ),
             eyeshadow=ProductState(
                 enabled=True,
@@ -348,7 +364,7 @@ class MakeupTryOnApp:
 
         title_lbl = tk.Label(
             header,
-            text="VIRTUAL MAKEUP TRY-ON",
+            text="VIRTUAL MAKEUP STUDIO",
             font=("Segoe UI Black", 12),
             bg=BG,
             fg=TEXT_PRIMARY,
@@ -430,7 +446,45 @@ class MakeupTryOnApp:
         hud_inner = tk.Frame(hud_bar, bg=BG)
         hud_inner.pack(anchor=tk.CENTER)
 
-        # Bare Face Compare Button (Interactive Press & Hold)
+        # 1. Live Camera Button
+        self.btn_camera = tk.Button(
+            hud_inner,
+            text="📷  Live Camera",
+            font=("Segoe UI Semibold", 9),
+            bg=DARK_PILL_BG,
+            fg=DARK_PILL_FG,
+            activebackground=DARK_PILL_BG,
+            activeforeground=DARK_PILL_FG,
+            relief="flat",
+            padx=14,
+            pady=7,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=DARK_PILL_BG,
+            command=self._switch_to_camera,
+        )
+        self.btn_camera.pack(side=tk.LEFT, padx=5)
+
+        # 2. Upload Photo Button
+        self.btn_upload = tk.Button(
+            hud_inner,
+            text="📁  Upload Photo",
+            font=("Segoe UI Semibold", 9),
+            bg=SURFACE,
+            fg=TEXT_PRIMARY,
+            activebackground=BORDER_LIGHT,
+            activeforeground=TEXT_PRIMARY,
+            relief="flat",
+            padx=14,
+            pady=7,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=BORDER_LIGHT,
+            command=self._upload_photo,
+        )
+        self.btn_upload.pack(side=tk.LEFT, padx=5)
+
+        # 3. Bare Face Compare Button (Interactive Press & Hold)
         self.btn_compare = tk.Button(
             hud_inner,
             text="👁  Hold for Bare Face",
@@ -446,11 +500,11 @@ class MakeupTryOnApp:
             highlightthickness=1,
             highlightbackground=BORDER_LIGHT,
         )
-        self.btn_compare.pack(side=tk.LEFT, padx=6)
+        self.btn_compare.pack(side=tk.LEFT, padx=5)
         self.btn_compare.bind("<ButtonPress-1>", lambda _e: self._set_compare(True))
         self.btn_compare.bind("<ButtonRelease-1>", lambda _e: self._set_compare(False))
 
-        # Auto-Lighting Toggle
+        # 4. Auto-Lighting Toggle
         self.btn_light = tk.Button(
             hud_inner,
             text="✦  Auto-Lighting: ON",
@@ -466,12 +520,12 @@ class MakeupTryOnApp:
             highlightbackground=BORDER_LIGHT,
             command=self._toggle_studio_light,
         )
-        self.btn_light.pack(side=tk.LEFT, padx=6)
+        self.btn_light.pack(side=tk.LEFT, padx=5)
 
-        # Mirror Camera Flip
-        btn_mirror = tk.Button(
+        # 5. Mirror Camera Flip
+        self.btn_mirror = tk.Button(
             hud_inner,
-            text="⇄  Mirror Camera",
+            text="⇄  Mirror",
             font=("Segoe UI", 9),
             bg=SURFACE,
             fg=TEXT_SECONDARY,
@@ -484,7 +538,7 @@ class MakeupTryOnApp:
             highlightbackground=BORDER_LIGHT,
             command=self._toggle_mirror,
         )
-        btn_mirror.pack(side=tk.LEFT, padx=6)
+        self.btn_mirror.pack(side=tk.LEFT, padx=5)
 
         # -------------------------------------------------------------------
         # Right Side: Clean Commercial Beauty Studio (Matches Image 3)
@@ -511,9 +565,11 @@ class MakeupTryOnApp:
             ("eyeliner", "Eyeliner"),
             ("brow", "Eyebrows"),
             ("foundation", "Foundation"),
+            ("concealer", "Concealer"),
+            ("contour", "Contour"),
         ]
 
-        # 2 rows of 3 pills each for clean generous spacing
+        # 2 rows of 4 pills each for clean generous spacing
         for i, (f_key, f_label) in enumerate(features):
             is_active = f_key == self.active_feature
             state = getattr(self.settings, f_key)
@@ -528,15 +584,15 @@ class MakeupTryOnApp:
                 activebackground=DARK_PILL_BG,
                 activeforeground=DARK_PILL_FG,
                 relief="flat",
-                padx=10,
+                padx=8,
                 pady=6,
                 cursor="hand2",
                 highlightthickness=1,
                 highlightbackground=DARK_PILL_BG if is_active else BORDER_LIGHT,
                 command=lambda k=f_key: self._select_feature(k),
             )
-            p_btn.grid(row=i // 3, column=i % 3, padx=3, pady=3, sticky="ew")
-            features_box.columnconfigure(i % 3, weight=1)
+            p_btn.grid(row=i // 4, column=i % 4, padx=2, pady=3, sticky="ew")
+            features_box.columnconfigure(i % 4, weight=1)
             self.feature_buttons[f_key] = p_btn
 
         # Section 2: "Color" (Matches Image 3: None/Slash button ⊘ + Circle Swatches)
@@ -860,6 +916,16 @@ class MakeupTryOnApp:
                 )
                 btn.pack(side=tk.LEFT, padx=2)
 
+        elif feature_key == "concealer":
+            self.finish_header.configure(text="Application Mode")
+            lbl = tk.Label(self.finish_box, text="Under-Eye Soft Light · Dark Circle Brightening", font=("Segoe UI", 8), bg=SURFACE, fg=TEXT_MUTED)
+            lbl.pack(side=tk.LEFT, padx=2)
+
+        elif feature_key == "contour":
+            self.finish_header.configure(text="Application Mode")
+            lbl = tk.Label(self.finish_box, text="Cheek Hollow Sculpt · Studio Shadow Depth", font=("Segoe UI", 8), bg=SURFACE, fg=TEXT_MUTED)
+            lbl.pack(side=tk.LEFT, padx=2)
+
         else:
             self.finish_header.configure(text="Application Mode")
             lbl = tk.Label(self.finish_box, text="Natural Blend · Seamless Falloff", font=("Segoe UI", 8), bg=SURFACE, fg=TEXT_MUTED)
@@ -893,6 +959,127 @@ class MakeupTryOnApp:
     # -----------------------------------------------------------------------
     # Interactive Event Handlers
     # -----------------------------------------------------------------------
+    def _switch_to_camera(self) -> None:
+        self.source_mode = "camera"
+        self.btn_camera.configure(
+            bg=DARK_PILL_BG,
+            fg=DARK_PILL_FG,
+            highlightbackground=DARK_PILL_BG,
+        )
+        self.btn_upload.configure(
+            bg=SURFACE,
+            fg=TEXT_PRIMARY,
+            highlightbackground=BORDER_LIGHT,
+        )
+        if not self.camera._is_active:
+            self.start_camera()
+        self.status_text.set("Live Camera active · Live Try-On Ready")
+
+    def _upload_photo(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select Picture for Virtual Makeup Try-On",
+            filetypes=[
+                ("All Supported Images", "*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.tiff"),
+                ("JPEG Images (*.jpg;*.jpeg)", "*.jpg;*.jpeg"),
+                ("PNG Images (*.png)", "*.png"),
+                ("WEBP Images (*.webp)", "*.webp"),
+                ("BMP Images (*.bmp)", "*.bmp"),
+                ("All Files (*.*)", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        try:
+            # Unicode-safe image decoding from file
+            raw_data = np.fromfile(path, dtype=np.uint8)
+            raw = cv2.imdecode(raw_data, cv2.IMREAD_COLOR)
+        except Exception as e:
+            messagebox.showerror("Image Load Error", f"Could not read the selected image:\n{e}")
+            return
+
+        if raw is None:
+            messagebox.showerror("Image Load Error", "The selected file is not a valid or readable image.")
+            return
+
+        # Proportionally constrain overly large images (e.g. >1920px) to prevent lag while maintaining HD detail
+        max_dim = 1920
+        h, w = raw.shape[:2]
+        if max(h, w) > max_dim:
+            scale = max_dim / float(max(h, w))
+            raw = cv2.resize(raw, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
+        self.uploaded_image_raw = raw
+        self.uploaded_filename = Path(path).name
+        self.source_mode = "photo"
+
+        # Update HUD active pill button styling
+        self.btn_camera.configure(
+            bg=SURFACE,
+            fg=TEXT_PRIMARY,
+            highlightbackground=BORDER_LIGHT,
+        )
+        self.btn_upload.configure(
+            bg=DARK_PILL_BG,
+            fg=DARK_PILL_FG,
+            highlightbackground=DARK_PILL_BG,
+        )
+
+        # Detect face landmarks on the uploaded photo using still image detector
+        try:
+            landmarks = self.still_detector.detect_bgr(raw)
+        except Exception:
+            landmarks = []
+
+        self.uploaded_landmarks = landmarks
+
+        if landmarks:
+            self.status_text.set(f"Photo '{self.uploaded_filename}' loaded · Face detected · Try-on active")
+        else:
+            self.status_text.set(f"Photo '{self.uploaded_filename}' loaded · No face detected in image")
+
+        self._render_uploaded_photo()
+
+    def _render_uploaded_photo(self) -> None:
+        if self.uploaded_image_raw is None:
+            return
+
+        with self._settings_lock:
+            mirror_active = self.is_mirrored
+            light_active = self.is_studio_light_on
+            user_brightness = self.camera_brightness_factor
+            compare_active = self.is_showing_original
+            settings_copy = copy.deepcopy(self.settings)
+
+        frame = self.uploaded_image_raw.copy()
+        if mirror_active:
+            frame = cv2.flip(frame, 1)
+
+        if light_active or user_brightness != 1.0:
+            work_frame = apply_camera_tone_and_brightness(frame, user_brightness, light_active)
+        else:
+            work_frame = frame
+
+        has_face = bool(self.uploaded_landmarks)
+        if compare_active or not has_face:
+            processed = work_frame
+        else:
+            if mirror_active:
+                landmarks = self.still_detector.detect_bgr(work_frame)
+            else:
+                landmarks = self.uploaded_landmarks
+
+            if landmarks:
+                processed = apply_makeup(work_frame, landmarks, settings_copy)
+            else:
+                processed = work_frame
+
+        with self._display_lock:
+            self._latest_processed_frame = processed
+            self._latest_raw_frame = frame
+            self._face_detected = has_face
+            self._pipeline_fps = 60.0
+
     def _disable_feature(self, product: str) -> None:
         with self._settings_lock:
             getattr(self.settings, product).enabled = False
@@ -900,6 +1087,8 @@ class MakeupTryOnApp:
         self._update_feature_pill(product, False)
         self._rebuild_swatches()
         self.status_text.set(f"{product.title()}: Disabled")
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _select_swatch(self, product: str, index: int) -> None:
         swatches = SWATCHES.get(product, [])
@@ -916,6 +1105,8 @@ class MakeupTryOnApp:
         self._update_feature_pill(product, True)
         self._rebuild_swatches()
         self.status_text.set(f"{product.title()}: {name}")
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _choose_custom_color(self, product: str) -> None:
         state = getattr(self.settings, product)
@@ -933,28 +1124,38 @@ class MakeupTryOnApp:
             self._rebuild_swatches()
             self.color_title_text.set(f"● Custom {color[1]}")
             self.status_text.set(f"{product.title()}: Custom Shade {color[1]}")
+            if self.source_mode == "photo":
+                self._render_uploaded_photo()
 
     def _set_lipstick_finish(self, mode: str) -> None:
         with self._settings_lock:
             self.settings.lipstick.blend_mode = mode
         self._rebuild_finish_options()
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _set_eyeliner_style(self, style: str) -> None:
         with self._settings_lock:
             self.settings.eyeliner.style = style
         self._rebuild_finish_options()
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _on_inline_slider_change(self, value: str) -> None:
         val_int = int(float(value))
         self.intensity_pct_label.configure(text=f"{val_int}%")
         with self._settings_lock:
             getattr(self.settings, self.active_feature).intensity = val_int / 100.0
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _on_brightness_slider_change(self, value: str) -> None:
         val_int = int(float(value))
         self.bright_pct_label.configure(text=f"{val_int}%")
         with self._settings_lock:
             self.camera_brightness_factor = val_int / 100.0
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _update_feature_pill(self, product: str, is_on: bool) -> None:
         btn = self.feature_buttons.get(product)
@@ -1012,17 +1213,19 @@ class MakeupTryOnApp:
                 if "blend_mode" in cfg:
                     state.blend_mode = cfg["blend_mode"]
 
-        for prod in ["lipstick", "blush", "eyeshadow", "eyeliner", "brow", "foundation"]:
+        for prod in ["lipstick", "blush", "eyeshadow", "eyeliner", "brow", "foundation", "concealer", "contour"]:
             self._update_feature_pill(prod, getattr(self.settings, prod).enabled)
 
         self._select_feature(self.active_feature, from_preset=True)
         self.status_text.set(f"Look Applied: {preset_name}")
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _update_tracking_indicator_visibility(self) -> None:
         """Hides the on-screen face tracking active indicator when viewing recommended looks."""
         if not hasattr(self, "dot_cv") or not hasattr(self, "tracking_lbl"):
             return
-        if self.is_viewing_recommended_looks:
+        if self.is_viewing_recommended_looks and self.source_mode == "camera":
             if self.dot_cv.winfo_manager():
                 self.dot_cv.pack_forget()
             if self.tracking_lbl.winfo_manager():
@@ -1038,6 +1241,8 @@ class MakeupTryOnApp:
         with self._settings_lock:
             self.is_showing_original = compare_original
         self.status_text.set("Showing Bare Face" if compare_original else "Showing Try-On Look")
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _toggle_studio_light(self) -> None:
         with self._settings_lock:
@@ -1048,10 +1253,14 @@ class MakeupTryOnApp:
             fg=TEXT_PRIMARY if val else TEXT_MUTED,
         )
         self.status_text.set("Studio Auto-Lighting: " + ("ON" if val else "OFF"))
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def _toggle_mirror(self) -> None:
         with self._settings_lock:
             self.is_mirrored = not self.is_mirrored
+        if self.source_mode == "photo":
+            self._render_uploaded_photo()
 
     def start_camera(self) -> None:
         self.status_text.set("Opening camera stream...")
@@ -1064,19 +1273,26 @@ class MakeupTryOnApp:
     def save_result(self) -> None:
         with self._display_lock:
             if self._latest_processed_frame is None:
-                messagebox.showinfo("Save Snapshot", "No active camera frame to save.")
+                messagebox.showinfo("Save Snapshot", "No active frame to save.")
                 return
             frame_to_save = self._latest_processed_frame.copy()
+
+        default_name = f"makeup_{self.uploaded_filename}" if (self.source_mode == "photo" and self.uploaded_filename) else "makeup_look.jpg"
 
         path = filedialog.asksaveasfilename(
             defaultextension=".jpg",
             filetypes=[("JPEG Image", "*.jpg"), ("PNG Image", "*.png")],
-            initialfile="makeup_look.jpg",
+            initialfile=default_name,
             title="Save Makeup Look Snapshot",
         )
         if not path:
             return
-        cv2.imwrite(path, frame_to_save)
+        ext = Path(path).suffix.lower() or ".jpg"
+        ok, buf = cv2.imencode(ext, frame_to_save)
+        if ok:
+            buf.tofile(path)
+        else:
+            cv2.imwrite(path, frame_to_save)
         self.status_text.set(f"Saved snapshot to {Path(path).name}")
 
     # -----------------------------------------------------------------------
@@ -1087,6 +1303,10 @@ class MakeupTryOnApp:
         frame_counter = 0
 
         while self._running:
+            if self.source_mode == "photo":
+                time.sleep(0.02)
+                continue
+
             raw_frame = self.camera.read_latest()
             if raw_frame is None:
                 time.sleep(0.005)
@@ -1146,14 +1366,21 @@ class MakeupTryOnApp:
             fps = self._pipeline_fps
 
         if frame is not None:
-            self.fps_badge_text.set(f"{fps:.0f} FPS · HD 720p")
-            if not self.is_viewing_recommended_looks:
+            if self.source_mode == "photo":
+                self.fps_badge_text.set("Photo Mode")
                 if has_face:
-                    self.tracking_badge_text.set("● Face Tracking Active")
+                    self.tracking_badge_text.set("● Face Detected")
                 else:
-                    self.tracking_badge_text.set("○ Searching for face...")
+                    self.tracking_badge_text.set("○ No Face Detected")
             else:
-                self.tracking_badge_text.set("")
+                self.fps_badge_text.set(f"{fps:.0f} FPS · HD 720p")
+                if not self.is_viewing_recommended_looks:
+                    if has_face:
+                        self.tracking_badge_text.set("● Face Tracking Active")
+                    else:
+                        self.tracking_badge_text.set("○ Searching for face...")
+                else:
+                    self.tracking_badge_text.set("")
 
             # Fast SIMD resize in OpenCV directly
             box_w = max(self.preview_container.winfo_width() - 4, 320)
@@ -1180,6 +1407,11 @@ class MakeupTryOnApp:
             self._worker_thread.join(timeout=0.5)
         try:
             self.detector.close()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "still_detector"):
+                self.still_detector.close()
         except Exception:
             pass
         self.root.destroy()
