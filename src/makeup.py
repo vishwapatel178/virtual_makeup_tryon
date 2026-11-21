@@ -24,6 +24,8 @@ from landmarks import (
 from masking import (
     apply_color,
     create_brow_mask,
+    create_concealer_mask,
+    create_contour_mask,
     create_ellipse_mask,
     create_eyeliner_mask,
     create_eyeshadow_mask,
@@ -51,11 +53,25 @@ class MakeupSettings:
             intensity=0.28,
         )
     )
+    concealer: ProductState = field(
+        default_factory=lambda: ProductState(
+            enabled=False,
+            color_bgr=(196, 218, 244),  # Light Neutral
+            intensity=0.35,
+        )
+    )
+    contour: ProductState = field(
+        default_factory=lambda: ProductState(
+            enabled=False,
+            color_bgr=(78, 105, 145),  # Warm Bronze
+            intensity=0.30,
+        )
+    )
     blush: ProductState = field(
         default_factory=lambda: ProductState(
             enabled=True,
             color_bgr=(144, 160, 232),  # Peach Blossom
-            intensity=0.28,
+            intensity=0.33,  # Enhanced by 15-20% for natural visibility
         )
     )
     eyeshadow: ProductState = field(
@@ -123,7 +139,34 @@ def apply_makeup(image: np.ndarray, landmarks, settings: MakeupSettings) -> np.n
             )
 
     # -----------------------------------------------------------------------
-    # 2. Blush (Naturally Diffused & Softly Blended into Cheek Skin)
+    # 2. Concealer (Under-Eye Dark Circle Soft-Focus Brightening)
+    # -----------------------------------------------------------------------
+    if getattr(settings, "concealer", None) and settings.concealer.enabled and settings.concealer.intensity > 0:
+        c_mask = create_concealer_mask(image.shape, landmarks, face_w)
+        # Apply gentle skin tone brightening & tear-trough smoothing
+        result = apply_color(
+            result,
+            c_mask,
+            settings.concealer.color_bgr,
+            settings.concealer.intensity * 0.45,
+            mode="soft_light",
+        )
+
+    # -----------------------------------------------------------------------
+    # 3. Contour (Cheek Hollow Sculpting Shadows & Bone Structure Definition)
+    # -----------------------------------------------------------------------
+    if getattr(settings, "contour", None) and settings.contour.enabled and settings.contour.intensity > 0:
+        contour_mask = create_contour_mask(image.shape, landmarks, face_w)
+        result = apply_color(
+            result,
+            contour_mask,
+            settings.contour.color_bgr,
+            settings.contour.intensity * 0.42,
+            mode="soft_light",
+        )
+
+    # -----------------------------------------------------------------------
+    # 4. Blush (Naturally Diffused & Softly Blended into Cheek Skin)
     # -----------------------------------------------------------------------
     if settings.blush.enabled and settings.blush.intensity > 0:
         axes = (max(12, int(face_w * 0.15)), max(9, int(face_w * 0.11)))
@@ -136,7 +179,7 @@ def apply_makeup(image: np.ndarray, landmarks, settings: MakeupSettings) -> np.n
             result,
             blush_mask,
             settings.blush.color_bgr,
-            settings.blush.intensity * 0.50,
+            settings.blush.intensity * 0.60,  # Increased by 20% for visible, delicate radiance
             mode="soft_light",  # Diffused soft wash
         )
 
