@@ -17,9 +17,13 @@ from landmarks import (
     LEFT_EYE_INDICES,
     LEFT_EYE_INNER_CORNER,
     LEFT_EYE_OUTER_CORNER,
+    LEFT_CONCEALER_INDICES,
+    LEFT_CONTOUR_INDICES,
     LEFT_UPPER_LID_INDICES,
     OUTER_LIP_INDICES,
     RIGHT_BROW_INDICES,
+    RIGHT_CONCEALER_INDICES,
+    RIGHT_CONTOUR_INDICES,
     RIGHT_EYE_CREASE_INDICES,
     RIGHT_EYE_INDICES,
     RIGHT_EYE_INNER_CORNER,
@@ -449,6 +453,63 @@ def create_brow_mask(image_shape: tuple[int, ...], landmarks, face_w: int) -> np
             cv2.fillPoly(mask, [px], 255)
 
     blur_k = max(9, face_w // 22) | 1
+    return soften_mask(mask, blur_k)
+
+
+# ---------------------------------------------------------------------------
+# Concealer Mask (Under-Eye Tear Trough Brightening)
+# ---------------------------------------------------------------------------
+
+def create_concealer_mask(image_shape: tuple[int, ...], landmarks, face_w: int) -> np.ndarray:
+    """Generate feathered under-eye masks to brighten dark circles and even skin tone naturally."""
+    h, w = image_shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+
+    for indices in (LEFT_CONCEALER_INDICES, RIGHT_CONCEALER_INDICES):
+        pts = get_region_points(landmarks, indices)
+        px = points_to_pixels(pts, w, h)
+        if len(px) >= 3:
+            hull = cv2.convexHull(px)
+            cv2.fillPoly(mask, [hull], 255)
+
+    blur_k = max(15, int(face_w * 0.08)) | 1
+    return soften_mask(mask, blur_k)
+
+
+# ---------------------------------------------------------------------------
+# Contour Mask (Cheek Hollow Sculpting Shadows)
+# ---------------------------------------------------------------------------
+
+def create_contour_mask(image_shape: tuple[int, ...], landmarks, face_w: int) -> np.ndarray:
+    """Generate subtle, feathered sculpting shadow masks in the cheek hollows below zygomatic arches."""
+    h, w = image_shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+
+    # Observer left cheek contour: from tragus 234 towards mouth corner 61
+    tragus_l = np.array(landmark_xy(landmarks, 234, w, h), dtype=np.float32)
+    mouth_l = np.array(landmark_xy(landmarks, 61, w, h), dtype=np.float32)
+    center_l = tragus_l * 0.60 + mouth_l * 0.40
+    center_l[1] += face_w * 0.035
+
+    # Observer right cheek contour: from tragus 454 towards mouth corner 291
+    tragus_r = np.array(landmark_xy(landmarks, 454, w, h), dtype=np.float32)
+    mouth_r = np.array(landmark_xy(landmarks, 291, w, h), dtype=np.float32)
+    center_r = tragus_r * 0.60 + mouth_r * 0.40
+    center_r[1] += face_w * 0.035
+
+    vec_l = mouth_l - tragus_l
+    angle_l = float(np.degrees(np.arctan2(vec_l[1], vec_l[0])))
+    vec_r = mouth_r - tragus_r
+    angle_r = float(np.degrees(np.arctan2(vec_r[1], vec_r[0])))
+
+    axis_major = max(14, int(face_w * 0.16))
+    axis_minor = max(8, int(face_w * 0.07))
+
+    for center, angle in [(center_l, angle_l), (center_r, angle_r)]:
+        cx, cy = int(center[0]), int(center[1])
+        cv2.ellipse(mask, (cx, cy), (axis_major, axis_minor), angle, 0, 360, 255, -1)
+
+    blur_k = max(25, int(face_w * 0.14)) | 1
     return soften_mask(mask, blur_k)
 
 
