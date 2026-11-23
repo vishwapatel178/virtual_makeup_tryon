@@ -55,6 +55,21 @@ SWATCHES: dict[str, list[tuple[str, tuple[int, int, int]]]] = {
         ("Ebony", (28, 24, 22)),
         ("Warm Auburn", (96, 54, 40)),
     ],
+    "concealer": [
+        ("Fair Ivory", (250, 232, 218)),
+        ("Light Neutral", (244, 218, 196)),
+        ("Medium Sand", (230, 196, 166)),
+        ("Warm Golden", (216, 176, 140)),
+        ("Tan Honey", (192, 148, 112)),
+        ("Deep Amber", (152, 108, 80)),
+    ],
+    "contour": [
+        ("Soft Sculpt", (160, 128, 105)),
+        ("Warm Bronze", (145, 105, 78)),
+        ("Neutral Taupe", (130, 100, 85)),
+        ("Deep Walnut", (98, 70, 52)),
+        ("Espresso", (68, 48, 38)),
+    ],
 }
 
 

@@ -15,6 +15,21 @@ const SWATCHES = {
     { name: "Warm Honey", hex: "#d0a480" },
     { name: "Sweet Caramel", hex: "#b2845f" },
   ],
+  concealer: [
+    { name: "Fair Ivory", hex: "#fae8da" },
+    { name: "Light Neutral", hex: "#f4dac4" },
+    { name: "Medium Sand", hex: "#e6c4a6" },
+    { name: "Warm Golden", hex: "#d8b08c" },
+    { name: "Tan Honey", hex: "#c09470" },
+    { name: "Deep Amber", hex: "#986c50" },
+  ],
+  contour: [
+    { name: "Soft Sculpt", hex: "#a08069" },
+    { name: "Warm Bronze", hex: "#91694e" },
+    { name: "Neutral Taupe", hex: "#826455" },
+    { name: "Deep Walnut", hex: "#624634" },
+    { name: "Espresso", hex: "#443026" },
+  ],
   blush: [
     { name: "Peach Blossom", hex: "#e8a090" },
     { name: "Dusty Rose", hex: "#e07a8a" },
@@ -78,6 +93,9 @@ const RIGHT_BROW = [300, 293, 334, 296, 336, 285, 295, 282, 283, 276];
 const LEFT_CHEEK = [345, 346, 347, 330, 266, 425, 411, 352];
 const RIGHT_CHEEK = [116, 117, 118, 101, 36, 205, 187, 123];
 
+const LEFT_CONCEALER = [33, 7, 163, 144, 145, 153, 154, 155, 133, 112, 26, 22, 23, 24, 110, 25];
+const RIGHT_CONCEALER = [362, 382, 381, 380, 374, 373, 390, 249, 263, 463, 341, 256, 252, 253, 254, 339, 255];
+
 const FACE_OVAL = [
   10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365,
   379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93,
@@ -93,10 +111,16 @@ const state = {
   mirror: true,
   showOriginal: false,
   activeLandmarks: null,
+  sourceMode: "camera", // "camera" or "photo"
+  uploadedImage: null,
+  uploadedLandmarks: null,
+  uploadedFileName: "",
 
   products: {
     foundation: { enabled: false, color: "#f0d2ba", intensity: 0.28 },
-    blush: { enabled: true, color: "#e8a090", intensity: 0.28 },
+    concealer: { enabled: false, color: "#f4dac4", intensity: 0.35 },
+    contour: { enabled: false, color: "#91694e", intensity: 0.30 },
+    blush: { enabled: true, color: "#e8a090", intensity: 0.33 },
     eyeshadow: { enabled: true, color: "#c4a484", intensity: 0.32 },
     eyeliner: { enabled: false, color: "#121214", intensity: 0.80, shape: "classic_wing" },
     brow: { enabled: true, color: "#4b342a", intensity: 0.25 },
@@ -117,6 +141,8 @@ const statusText = document.getElementById("statusText");
 const fpsBadge = document.getElementById("fpsBadge");
 
 const btnCamera = document.getElementById("btnCamera");
+const btnUpload = document.getElementById("btnUpload");
+const fileUpload = document.getElementById("fileUpload");
 const btnSave = document.getElementById("btnSave");
 const chkMirror = document.getElementById("chkMirror");
 const chkOriginal = document.getElementById("chkOriginal");
@@ -219,6 +245,16 @@ function stopCamera() {
 // FaceMesh Results & Compositing Pipeline
 // ---------------------------------------------------------------------------
 function onFaceMeshResults(results) {
+  if (state.sourceMode === "photo") {
+    if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+      state.uploadedLandmarks = results.multiFaceLandmarks[0];
+    } else {
+      state.uploadedLandmarks = null;
+    }
+    renderUploadedPhoto();
+    return;
+  }
+
   const source = results.image;
   if (!source) return;
 
@@ -262,6 +298,49 @@ function onFaceMeshResults(results) {
   statusText.textContent = "Face detected - Real-time tracking";
 }
 
+function renderUploadedPhoto() {
+  if (!state.uploadedImage) return;
+
+  const img = state.uploadedImage;
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+
+  if (canvas.width !== (w * (window.devicePixelRatio || 1))) {
+    setupHighDpiCanvas(w, h);
+  }
+
+  ctx.save();
+  ctx.clearRect(0, 0, w, h);
+
+  if (state.mirror) {
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
+  }
+
+  ctx.drawImage(img, 0, 0, w, h);
+
+  if (state.showOriginal || !state.uploadedLandmarks) {
+    ctx.restore();
+    fpsBadge.textContent = "Photo Mode";
+    if (!state.uploadedLandmarks) {
+      statusText.textContent = `Photo '${state.uploadedFileName}' loaded · No face detected in image`;
+      statusDot.className = "status-indicator waiting";
+    } else {
+      statusText.textContent = "Showing Original Photo";
+      statusDot.className = "status-indicator";
+    }
+    return;
+  }
+
+  // Apply Makeup Layers reusing existing pipeline
+  applyAllMakeupLayers(ctx, state.uploadedLandmarks, w, h);
+
+  ctx.restore();
+  fpsBadge.textContent = "Photo Mode";
+  statusDot.className = "status-indicator";
+  statusText.textContent = `Photo '${state.uploadedFileName}' loaded · Face detected · Try-on active`;
+}
+
 // ---------------------------------------------------------------------------
 // Layered Compositor
 // ---------------------------------------------------------------------------
@@ -275,7 +354,17 @@ function applyAllMakeupLayers(context, lm, w, h) {
     renderFoundation(context, lm, w, h, faceW, state.products.foundation);
   }
 
-  // 2. Blushy Cheeks (Ultra-Soft, Naturally Diffused into Skin)
+  // 2. Concealer (Under-Eye Tear Trough Soft-Focus Brightening)
+  if (state.products.concealer && state.products.concealer.enabled && state.products.concealer.intensity > 0) {
+    renderConcealer(context, lm, w, h, faceW, state.products.concealer);
+  }
+
+  // 3. Contour (Cheek Hollow Sculpting Shadows)
+  if (state.products.contour && state.products.contour.enabled && state.products.contour.intensity > 0) {
+    renderContour(context, lm, w, h, faceW, state.products.contour);
+  }
+
+  // 4. Blushy Cheeks (Ultra-Soft, Naturally Diffused into Skin)
   if (state.products.blush.enabled && state.products.blush.intensity > 0) {
     renderBlush(context, lm, w, h, faceW, state.products.blush);
   }
@@ -360,12 +449,91 @@ function renderFoundation(c, lm, w, h, faceW, p) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Blushy Cheeks (Pore-Diffused Soft Glow)
+// 2. Concealer (Under-Eye Tear Trough Soft-Focus Brightening)
+// ---------------------------------------------------------------------------
+function renderConcealer(c, lm, w, h, faceW, p) {
+  c.save();
+  c.globalCompositeOperation = "soft-light";
+  c.globalAlpha = p.intensity * 0.45;
+
+  const hex = p.color;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+
+  c.fillStyle = `rgba(${r}, ${g}, ${b}, 1.0)`;
+  c.filter = `blur(${Math.max(12, Math.round(faceW * 0.08))}px)`;
+
+  for (const underEyeIndices of [LEFT_CONCEALER, RIGHT_CONCEALER]) {
+    c.beginPath();
+    for (let i = 0; i < underEyeIndices.length; i++) {
+      const pt = getPoint(lm, underEyeIndices[i], w, h);
+      if (i === 0) c.moveTo(pt.x, pt.y);
+      else c.lineTo(pt.x, pt.y);
+    }
+    c.closePath();
+    c.fill();
+  }
+  c.restore();
+}
+
+// ---------------------------------------------------------------------------
+// 3. Contour (Cheek Hollow Sculpting Shadows)
+// ---------------------------------------------------------------------------
+function renderContour(c, lm, w, h, faceW, p) {
+  c.save();
+  c.globalCompositeOperation = "soft-light";
+  c.globalAlpha = p.intensity * 0.42;
+
+  const hex = p.color;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+
+  const tragusL = getPoint(lm, 234, w, h);
+  const mouthL = getPoint(lm, 61, w, h);
+  const tragusR = getPoint(lm, 454, w, h);
+  const mouthR = getPoint(lm, 291, w, h);
+
+  const major = Math.max(14, faceW * 0.16);
+  const minor = Math.max(8, faceW * 0.07);
+
+  const cheeks = [
+    {
+      center: {
+        x: tragusL.x * 0.60 + mouthL.x * 0.40,
+        y: tragusL.y * 0.60 + mouthL.y * 0.40 + faceW * 0.035,
+      },
+      angle: Math.atan2(mouthL.y - tragusL.y, mouthL.x - tragusL.x),
+    },
+    {
+      center: {
+        x: tragusR.x * 0.60 + mouthR.x * 0.40,
+        y: tragusR.y * 0.60 + mouthR.y * 0.40 + faceW * 0.035,
+      },
+      angle: Math.atan2(mouthR.y - tragusR.y, mouthR.x - tragusR.x),
+    },
+  ];
+
+  c.fillStyle = `rgba(${r}, ${g}, ${b}, 1.0)`;
+  c.filter = `blur(${Math.max(16, Math.round(faceW * 0.13))}px)`;
+
+  for (const chk of cheeks) {
+    c.beginPath();
+    c.ellipse(chk.center.x, chk.center.y, major, minor, chk.angle, 0, Math.PI * 2);
+    c.fill();
+  }
+
+  c.restore();
+}
+
+// ---------------------------------------------------------------------------
+// 4. Blushy Cheeks (Pore-Diffused Soft Glow)
 // ---------------------------------------------------------------------------
 function renderBlush(c, lm, w, h, faceW, p) {
   c.save();
   c.globalCompositeOperation = "soft-light";  // Seamlessly diffuses into skin
-  c.globalAlpha = p.intensity * 0.60;
+  c.globalAlpha = p.intensity * 0.72; // Enhanced by 20% for visible, delicate radiance
 
   const radiusX = Math.max(15, faceW * 0.15);
   const radiusY = Math.max(11, faceW * 0.11);
@@ -646,6 +814,7 @@ function setupControls() {
         state.products[product].color = s.hex;
         const colorInput = document.getElementById(`color-${product}`);
         if (colorInput) colorInput.value = s.hex;
+        if (state.sourceMode === "photo") renderUploadedPhoto();
       });
       container.appendChild(btn);
     });
@@ -656,6 +825,7 @@ function setupControls() {
     if (chk) {
       chk.addEventListener("change", (e) => {
         state.products[product].enabled = e.target.checked;
+        if (state.sourceMode === "photo") renderUploadedPhoto();
       });
     }
 
@@ -667,6 +837,7 @@ function setupControls() {
         if (container) {
           container.querySelectorAll(".swatch-btn").forEach(b => b.classList.remove("active"));
         }
+        if (state.sourceMode === "photo") renderUploadedPhoto();
       });
     }
 
@@ -677,6 +848,7 @@ function setupControls() {
         const val = parseInt(e.target.value, 10);
         valDisplay.textContent = `${val}%`;
         state.products[product].intensity = val / 100.0;
+        if (state.sourceMode === "photo") renderUploadedPhoto();
       });
     }
   });
@@ -685,6 +857,7 @@ function setupControls() {
   if (shapeSelect) {
     shapeSelect.addEventListener("change", (e) => {
       state.products.eyeliner.shape = e.target.value;
+      if (state.sourceMode === "photo") renderUploadedPhoto();
     });
   }
 
@@ -692,10 +865,23 @@ function setupControls() {
   if (blendSelect) {
     blendSelect.addEventListener("change", (e) => {
       state.products.lipstick.blend = e.target.value;
+      if (state.sourceMode === "photo") renderUploadedPhoto();
     });
   }
 
+  // Camera Button: Switches to live camera feed
   btnCamera.addEventListener("click", () => {
+    if (state.sourceMode === "photo") {
+      state.sourceMode = "camera";
+      if (btnUpload) {
+        btnUpload.classList.remove("btn-primary");
+        btnUpload.classList.add("btn-secondary");
+      }
+      btnCamera.classList.add("btn-primary");
+      btnCamera.classList.remove("btn-secondary");
+      startCamera();
+      return;
+    }
     if (state.isCameraRunning) {
       stopCamera();
     } else {
@@ -703,19 +889,67 @@ function setupControls() {
     }
   });
 
+  // Upload Photo Button & File Input
+  if (btnUpload && fileUpload) {
+    btnUpload.addEventListener("click", () => {
+      fileUpload.click();
+    });
+
+    fileUpload.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = async () => {
+          stopCamera();
+          state.sourceMode = "photo";
+          state.uploadedImage = img;
+          state.uploadedFileName = file.name;
+
+          btnCamera.classList.remove("btn-primary");
+          btnCamera.classList.add("btn-secondary");
+          btnUpload.classList.add("btn-primary");
+          btnUpload.classList.remove("btn-secondary");
+
+          statusDot.className = "status-indicator waiting";
+          statusText.textContent = `Analyzing face in '${file.name}'...`;
+
+          try {
+            if (faceMesh) {
+              await faceMesh.send({ image: img });
+            }
+          } catch (err) {
+            console.error("FaceMesh detection error on image:", err);
+            state.uploadedLandmarks = null;
+            renderUploadedPhoto();
+          }
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   btnSave.addEventListener("click", () => {
     const link = document.createElement("a");
-    link.download = `makeup_snapshot_${Date.now()}.jpg`;
+    const name = state.sourceMode === "photo" && state.uploadedFileName
+      ? `makeup_${state.uploadedFileName.replace(/\.[^/.]+$/, "")}.jpg`
+      : `makeup_snapshot_${Date.now()}.jpg`;
+    link.download = name;
     link.href = canvas.toDataURL("image/jpeg", 0.95);
     link.click();
   });
 
   chkMirror.addEventListener("change", (e) => {
     state.mirror = e.target.checked;
+    if (state.sourceMode === "photo") renderUploadedPhoto();
   });
 
   chkOriginal.addEventListener("change", (e) => {
     state.showOriginal = e.target.checked;
+    if (state.sourceMode === "photo") renderUploadedPhoto();
   });
 
   btnResetAll.addEventListener("click", () => {
@@ -731,11 +965,11 @@ function setupControls() {
 
     state.products.blush.enabled = true;
     document.getElementById("chk-blush").checked = true;
-    state.products.blush.intensity = 0.28;
+    state.products.blush.intensity = 0.33;
     const blushInput = document.getElementById("intensity-blush");
     const blushVal = document.getElementById("val-blush");
-    if (blushInput) blushInput.value = "28";
-    if (blushVal) blushVal.textContent = "28%";
+    if (blushInput) blushInput.value = "33";
+    if (blushVal) blushVal.textContent = "33%";
 
     state.products.brow.enabled = true;
     document.getElementById("chk-brow").checked = true;
@@ -748,6 +982,8 @@ function setupControls() {
     state.products.eyeshadow.enabled = true;
     document.getElementById("chk-eyeshadow").checked = true;
     state.products.eyeshadow.intensity = 0.32;
+
+    if (state.sourceMode === "photo") renderUploadedPhoto();
   });
 }
 
